@@ -22,12 +22,26 @@ enum WorkspaceKind: String, Codable, Hashable, Sendable {
     case personal
     case team
 
-    var label: String {
+    nonisolated init(title: String) {
+        self = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare("Personal") == .orderedSame ? .personal : .team
+    }
+
+    nonisolated var label: String {
         switch self {
         case .personal:
             return "PERSONAL"
         case .team:
             return "TEAM"
+        }
+    }
+
+    nonisolated var displayTitle: String {
+        switch self {
+        case .personal:
+            return "Personal"
+        case .team:
+            return "Team"
         }
     }
 }
@@ -47,7 +61,7 @@ enum PlanBadge: String, Codable, CaseIterable, Hashable, Sendable {
         self = PlanBadge(rawValue: rawPlan?.lowercased() ?? "") ?? .unknown
     }
 
-    var title: String {
+    nonisolated var title: String {
         switch self {
         case .free:
             return "Free"
@@ -69,6 +83,15 @@ enum PlanBadge: String, Codable, CaseIterable, Hashable, Sendable {
             return "Unknown"
         }
     }
+
+    nonisolated var isOrganizationPlan: Bool {
+        switch self {
+        case .team, .business, .enterprise, .edu:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 struct StoredWorkspace: Codable, Identifiable, Hashable, Sendable {
@@ -78,11 +101,23 @@ struct StoredWorkspace: Codable, Identifiable, Hashable, Sendable {
     var role: String?
     var isDefault: Bool
 
-    var menuLabel: String {
-        if title.isEmpty {
-            return kind.label
+    nonisolated var menuLabel: String {
+        if trimmedTitle.isEmpty {
+            return kind.displayTitle
         }
-        return title
+        return trimmedTitle
+    }
+
+    nonisolated var trimmedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated var isPersonalNamed: Bool {
+        trimmedTitle.caseInsensitiveCompare("Personal") == .orderedSame
+    }
+
+    nonisolated var displayName: String {
+        isPersonalNamed ? "personal" : menuLabel
     }
 }
 
@@ -100,6 +135,30 @@ struct StoredAccount: Codable, Identifiable, Hashable, Sendable {
 
     var selectedWorkspace: StoredWorkspace? {
         workspaces.first(where: { $0.id == selectedWorkspaceID }) ?? workspaces.first
+    }
+
+    var preferredOrganizationWorkspace: StoredWorkspace? {
+        workspaces.first(where: { !$0.isPersonalNamed }) ?? workspaces.first(where: { $0.kind == .team })
+    }
+
+    func organizationDisplayName(for workspace: StoredWorkspace?) -> String {
+        if let workspace, !workspace.isPersonalNamed {
+            return workspace.displayName
+        }
+
+        if let preferredOrganizationWorkspace {
+            return preferredOrganizationWorkspace.displayName
+        }
+
+        if plan.isOrganizationPlan {
+            return "\(plan.title) Plan"
+        }
+
+        return workspace?.displayName ?? "personal"
+    }
+
+    var currentOrganizationDisplayName: String {
+        organizationDisplayName(for: selectedWorkspace)
     }
 }
 
@@ -143,6 +202,7 @@ struct UsageSnapshot: Hashable, Sendable {
 struct ProbeResult: Sendable {
     var email: String
     var plan: PlanBadge
+    var workspaces: [StoredWorkspace]?
     var snapshot: UsageSnapshot
 }
 

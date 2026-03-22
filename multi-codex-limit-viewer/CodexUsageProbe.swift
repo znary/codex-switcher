@@ -376,6 +376,7 @@ struct CodexUsageProbe: Sendable {
         return ProbeResult(
             email: email,
             plan: PlanBadge(rawPlan: (rateLimitPayload["planType"] as? String) ?? rawPlan),
+            workspaces: parseWorkspaces(from: accountPayload),
             snapshot: UsageSnapshot(
                 capturedAt: Date(),
                 meters: meters,
@@ -397,6 +398,61 @@ struct CodexUsageProbe: Sendable {
             usedPercent: usedPercent,
             windowDurationMinutes: durationMinutes == 0 ? nil : durationMinutes,
             resetsAt: resetsAtSeconds.map { Date(timeIntervalSince1970: $0) }
+        )
+    }
+
+    nonisolated private static func parseWorkspaces(from accountPayload: [String: Any]) -> [StoredWorkspace]? {
+        let rawWorkspaces = (
+            accountPayload["organizations"] as? [[String: Any]]
+            ?? accountPayload["workspaces"] as? [[String: Any]]
+            ?? (accountPayload["workspaceInfo"] as? [String: Any])?["organizations"] as? [[String: Any]]
+            ?? (accountPayload["workspaceInfo"] as? [String: Any])?["workspaces"] as? [[String: Any]]
+        )
+
+        guard let rawWorkspaces else {
+            return nil
+        }
+
+        let workspaces = rawWorkspaces.compactMap(parseWorkspace)
+        guard !workspaces.isEmpty else {
+            return nil
+        }
+
+        return workspaces.sorted {
+            if $0.isDefault != $1.isDefault {
+                return $0.isDefault && !$1.isDefault
+            }
+            return $0.menuLabel.localizedCaseInsensitiveCompare($1.menuLabel) == .orderedAscending
+        }
+    }
+
+    nonisolated private static func parseWorkspace(from payload: [String: Any]) -> StoredWorkspace? {
+        guard
+            let id = (payload["id"] as? String) ?? (payload["workspaceId"] as? String),
+            !id.isEmpty
+        else {
+            return nil
+        }
+
+        let title = ((payload["title"] as? String) ?? (payload["name"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let role = payload["role"] as? String
+        let isDefault = boolean(from: payload["isDefault"]) ?? boolean(from: payload["is_default"]) ?? false
+        let kind: WorkspaceKind
+
+        if let rawKind = (payload["kind"] as? String)?.lowercased(),
+           let parsedKind = WorkspaceKind(rawValue: rawKind) {
+            kind = parsedKind
+        } else {
+            kind = WorkspaceKind(title: title)
+        }
+
+        return StoredWorkspace(
+            id: id,
+            title: title.isEmpty ? kind.displayTitle : title,
+            kind: kind,
+            role: role,
+            isDefault: isDefault
         )
     }
 
@@ -424,6 +480,19 @@ struct CodexUsageProbe: Sendable {
             return number
         case let number as Int:
             return Double(number)
+        default:
+            return nil
+        }
+    }
+
+    nonisolated private static func boolean(from value: Any?) -> Bool? {
+        switch value {
+        case let boolean as Bool:
+            return boolean
+        case let number as NSNumber:
+            return number.boolValue
+        case let string as String:
+            return NSString(string: string).boolValue
         default:
             return nil
         }

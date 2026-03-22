@@ -339,6 +339,13 @@ final class MenuBarViewModel: ObservableObject {
                     updatedAccounts[accountIndex].email = probeResult.email
                     updatedAccounts[accountIndex].maskedEmail = maskEmailAddress(probeResult.email)
                     updatedAccounts[accountIndex].plan = probeResult.plan
+                    if let workspaces = probeResult.workspaces, !workspaces.isEmpty {
+                        updatedAccounts[accountIndex].workspaces = workspaces
+                        updatedAccounts[accountIndex].selectedWorkspaceID = preferredWorkspaceID(
+                            existingSelectionID: updatedAccounts[accountIndex].selectedWorkspaceID,
+                            available: workspaces
+                        )
+                    }
                     updatedAccounts[accountIndex].lastKnownRefreshAt = probeResult.snapshot.capturedAt
                     runtimeState.snapshotsByWorkspaceID[outcome.workspaceID] = probeResult.snapshot
                     runtimeState.lastUpdatedAt = probeResult.snapshot.capturedAt
@@ -425,6 +432,18 @@ final class MenuBarViewModel: ObservableObject {
     private func log(_ message: String) {
         logger.append(message)
         refreshDiagnosticsReport()
+    }
+
+    private func preferredWorkspaceID(existingSelectionID: String, available workspaces: [StoredWorkspace]) -> String {
+        if workspaces.contains(where: { $0.id == existingSelectionID }) {
+            return existingSelectionID
+        }
+
+        if let defaultWorkspace = workspaces.first(where: \.isDefault) {
+            return defaultWorkspace.id
+        }
+
+        return workspaces.first?.id ?? existingSelectionID
     }
 
     private func refreshDiagnosticsReport() {

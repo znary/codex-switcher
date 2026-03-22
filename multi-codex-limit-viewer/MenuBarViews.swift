@@ -6,147 +6,280 @@
 import AppKit
 import SwiftUI
 
+private enum CapacityDisplayMode: String {
+    case remaining
+    case used
+
+    var title: String {
+        switch self {
+        case .remaining:
+            return "Remaining"
+        case .used:
+            return "Used"
+        }
+    }
+
+    var toggleTitle: String {
+        switch self {
+        case .remaining:
+            return "Show Used"
+        case .used:
+            return "Show Remaining"
+        }
+    }
+
+    var summaryText: String {
+        switch self {
+        case .remaining:
+            return "Default view shows the room you still have."
+        case .used:
+            return "Quickly compare which windows are burning faster."
+        }
+    }
+
+    func percent(for meter: UsageMeter) -> Int {
+        let used = max(0, min(meter.usedPercent, 100))
+
+        switch self {
+        case .remaining:
+            return Int((100 - used).rounded())
+        case .used:
+            return Int(used.rounded())
+        }
+    }
+
+    func progress(for meter: UsageMeter) -> Double {
+        Double(percent(for: meter)) / 100
+    }
+
+    func detailLabel(for meter: UsageMeter) -> String {
+        switch self {
+        case .remaining:
+            return percent(for: meter) == 1 ? "left" : "left"
+        case .used:
+            return "used"
+        }
+    }
+}
+
 struct MenuBarRootView: View {
+    @AppStorage("capacityDisplayMode") private var capacityDisplayModeRawValue = CapacityDisplayMode.remaining.rawValue
     @ObservedObject var viewModel: MenuBarViewModel
+
+    private var capacityDisplayMode: CapacityDisplayMode {
+        CapacityDisplayMode(rawValue: capacityDisplayModeRawValue) ?? .remaining
+    }
 
     var body: some View {
         Group {
             if let activeAccount = viewModel.activeAccount,
                let activeWorkspace = viewModel.activeWorkspace {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
                         header(account: activeAccount, workspace: activeWorkspace)
-
-                        Divider()
-
                         usageSection(account: activeAccount)
-
-                        Divider()
-
                         accountsSection
-
-                        Divider()
-
                         footerActions
                     }
-                    .padding(20)
+                    .padding(18)
                 }
-                .frame(width: 360, height: 680)
+                .background(ScrollChromeTuner())
+                .frame(width: 388, height: 700)
             } else {
                 emptyState
-                    .frame(width: 360, height: 260)
+                    .frame(width: 388, height: 300)
             }
         }
-        .background(.regularMaterial)
+        .background(
+            LinearGradient(
+                colors: [Color.codexCanvas, Color.codexCanvasShadow],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
     }
 
     private func header(account: StoredAccount, workspace: StoredWorkspace) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Codex")
-                    .font(.system(size: 24, weight: .semibold))
+        MenuSectionCard {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Codex")
+                        .font(.system(size: 30, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.codexInk)
 
-                if let updatedAt = viewModel.runtimeState(for: account.id).lastUpdatedAt {
-                    Text("Updated \(updatedAt, style: .relative)")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Waiting for first refresh")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
+                    Text(updatedText(for: account.id))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.codexSecondary)
 
-                if let error = viewModel.runtimeState(for: account.id).lastError {
-                    Text(error)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-
-                    diagnosticsActions
-                }
-
-                if let transientError = viewModel.transientError,
-                   transientError != viewModel.runtimeState(for: account.id).lastError {
-                    Text(transientError)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.red)
-                        .lineLimit(3)
-
-                    diagnosticsActions
-                }
-            }
-
-            Spacer(minLength: 0)
-
-            VStack(alignment: .trailing, spacing: 8) {
-                Text(viewModel.displayedEmail(for: account))
-                    .font(.system(size: 16, weight: .medium))
-                    .lineLimit(1)
-
-                WorkspacePicker(
-                    account: account,
-                    selectedWorkspace: workspace,
-                    onSelect: { workspaceID in
-                        viewModel.selectWorkspace(workspaceID, for: account.id)
+                    if let error = viewModel.runtimeState(for: account.id).lastError {
+                        diagnosticsErrorBlock(error)
+                    } else if let transientError = viewModel.transientError {
+                        diagnosticsErrorBlock(transientError)
                     }
-                )
-
-                Button {
-                    Task {
-                        await viewModel.refreshAll()
-                    }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 15, weight: .medium))
-                        .frame(width: 30, height: 30)
                 }
-                .buttonStyle(.plain)
-                .background(
-                    Circle()
-                        .fill(Color.black.opacity(0.05))
-                )
+
+                Spacer(minLength: 0)
+
+                VStack(alignment: .trailing, spacing: 12) {
+                    Text(viewModel.displayedEmail(for: account))
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.codexInk)
+                        .lineLimit(1)
+                        .multilineTextAlignment(.trailing)
+
+                    if account.workspaces.count > 1 {
+                        WorkspacePicker(
+                            account: account,
+                            selectedWorkspace: workspace,
+                            labelTitle: account.organizationDisplayName(for: workspace),
+                            onSelect: { workspaceID in
+                                viewModel.selectWorkspace(workspaceID, for: account.id)
+                            }
+                        )
+                    } else {
+                        WorkspaceBadge(
+                            title: account.currentOrganizationDisplayName,
+                            icon: account.plan.isOrganizationPlan ? "building.2.crop.circle" : "person.crop.circle"
+                        )
+                    }
+
+                    Button {
+                        Task {
+                            await viewModel.refreshAll()
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if viewModel.isRefreshing {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
+
+                            Text(viewModel.isRefreshing ? "Refreshing" : "Refresh")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundStyle(Color.codexInk)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.codexCardRaised)
+                        )
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .stroke(Color.codexStroke, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.isRefreshing)
+                }
             }
         }
     }
 
     private func usageSection(account: StoredAccount) -> some View {
-        VStack(alignment: .leading, spacing: 22) {
-            ForEach(viewModel.snapshot(for: account)?.meters ?? []) { meter in
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text(meter.title)
-                            .font(.system(size: 22, weight: .semibold))
+        MenuSectionCard {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Capacity")
+                        .font(.system(size: 22, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.codexInk)
 
-                        Spacer()
-
-                        Text("\(Int(meter.usedPercent.rounded()))%")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    UsageBar(progress: meter.usedPercent / 100, height: 14)
-
-                    if let resetsAt = meter.resetsAt {
-                        Text("Resets in \(remainingText(until: resetsAt))")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(capacityDisplayMode.summaryText)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.codexSecondary)
                 }
+
+                Spacer(minLength: 0)
+
+                Button {
+                    capacityDisplayModeRawValue = nextCapacityDisplayMode.rawValue
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.left.arrow.right.circle")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        Text(capacityDisplayMode.toggleTitle)
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.codexInk)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.codexCardRaised)
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(Color.codexStroke, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
+            ForEach(viewModel.snapshot(for: account)?.meters ?? []) { meter in
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(meter.title)
+                                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Color.codexInk)
+
+                            if let resetsAt = meter.resetsAt {
+                                Text("Resets in \(remainingText(until: resetsAt))")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Color.codexSecondary)
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("\(capacityDisplayMode.percent(for: meter))%")
+                                .font(.system(size: 30, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color.codexInk)
+
+                            Text(capacityDisplayMode.detailLabel(for: meter))
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.codexSecondary)
+                        }
+                    }
+
+                    UsageBar(
+                        progress: capacityDisplayMode.progress(for: meter),
+                        height: 12,
+                        fill: meterFillColor(for: meter),
+                        track: Color.codexTrack
+                    )
+                }
+                .padding(16)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.codexCardRaised)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.codexStroke, lineWidth: 1)
+                )
             }
         }
     }
 
     private var accountsSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Switch Account")
-                .font(.system(size: 22, weight: .semibold))
+        MenuSectionCard {
+            Text("Accounts")
+                .font(.system(size: 22, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.codexInk)
 
             ForEach(viewModel.accounts) { account in
                 AccountListRow(
                     account: account,
                     displayedEmail: viewModel.displayedEmail(for: account),
+                    organizationName: account.currentOrganizationDisplayName,
                     snapshot: viewModel.snapshot(for: account),
-                    workspace: account.selectedWorkspace,
+                    displayMode: capacityDisplayMode,
                     isActive: viewModel.activeAccount?.id == account.id
                 ) {
                     viewModel.selectAccount(account.id)
@@ -156,7 +289,7 @@ struct MenuBarRootView: View {
     }
 
     private var footerActions: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        MenuSectionCard {
             FooterButton(icon: "plus", title: "Add Account") {
                 Task {
                     await viewModel.addAccount()
@@ -186,10 +319,7 @@ struct MenuBarRootView: View {
             }
 
             SettingsLink {
-                Label("Settings", systemImage: "gearshape")
-                    .font(.system(size: 16, weight: .medium))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                FooterRowLabel(icon: "gearshape", title: "Settings")
             }
             .buttonStyle(.plain)
 
@@ -200,20 +330,17 @@ struct MenuBarRootView: View {
     }
 
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        MenuSectionCard {
             Text("Codex")
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: 30, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.codexInk)
 
             Text("No imported ChatGPT Codex account was found yet.")
-                .font(.system(size: 15))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color.codexSecondary)
 
             if let error = viewModel.transientError {
-                Text(error)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.red)
-
-                diagnosticsActions
+                diagnosticsErrorBlock(error)
             }
 
             Button {
@@ -221,24 +348,94 @@ struct MenuBarRootView: View {
                     await viewModel.addAccount()
                 }
             } label: {
-                Text("Add Account")
-                    .font(.system(size: 15, weight: .medium))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.codexTint)
-                    )
-                    .foregroundStyle(.white)
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .bold))
+
+                    Text("Add Account")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.codexAccent)
+                )
             }
             .buttonStyle(.plain)
 
             Text("Add Account will first try the account currently logged into Codex, then open browser login if it is already in the list.")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.codexSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(24)
+    }
+
+    private var nextCapacityDisplayMode: CapacityDisplayMode {
+        capacityDisplayMode == .remaining ? .used : .remaining
+    }
+
+    private func updatedText(for accountID: String) -> String {
+        if let updatedAt = viewModel.runtimeState(for: accountID).lastUpdatedAt {
+            return "Updated \(relativeUpdateText(since: updatedAt))"
+        }
+        return "Waiting for first refresh"
+    }
+
+    private func relativeUpdateText(since date: Date) -> String {
+        let seconds = max(0, Int(Date().timeIntervalSince(date)))
+
+        if seconds < 60 {
+            return "just now"
+        }
+
+        let minutes = seconds / 60
+        if minutes < 60 {
+            return minutes == 1 ? "1 min ago" : "\(minutes) min ago"
+        }
+
+        let hours = minutes / 60
+        if hours < 24 {
+            return hours == 1 ? "1 hour ago" : "\(hours) hours ago"
+        }
+
+        let days = hours / 24
+        return days == 1 ? "1 day ago" : "\(days) days ago"
+    }
+
+    private func diagnosticsErrorBlock(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(message)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.codexDanger)
+                .lineLimit(3)
+
+            diagnosticsActions
+        }
+    }
+
+    private var diagnosticsActions: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Button("Copy Diagnostics") {
+                    viewModel.copyDiagnostics()
+                }
+
+                Button("Open Log") {
+                    viewModel.revealDiagnosticsLog()
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .semibold))
+
+            Text(viewModel.diagnosticsLogPath)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.codexSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
     }
 
     private func remainingText(until date: Date) -> String {
@@ -258,26 +455,18 @@ struct MenuBarRootView: View {
         return "\(max(minutes, 1))m"
     }
 
-    private var diagnosticsActions: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
-                Button("Copy Diagnostics") {
-                    viewModel.copyDiagnostics()
-                }
+    private func meterFillColor(for meter: UsageMeter) -> Color {
+        let remaining = max(0, min(100 - meter.usedPercent, 100))
 
-                Button("Open Log") {
-                    viewModel.revealDiagnosticsLog()
-                }
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .medium))
-
-            Text(viewModel.diagnosticsLogPath)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+        if remaining <= 15 {
+            return Color.codexDanger
         }
+
+        if remaining <= 35 {
+            return Color.codexWarning
+        }
+
+        return Color.codexAccent
     }
 }
 
@@ -289,7 +478,7 @@ struct StatusBarLabel: View {
         HStack(spacing: 6) {
             Image(systemName: "waveform.path.ecg")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.codexTint)
+                .foregroundStyle(Color.codexAccent)
 
             VStack(spacing: 3) {
                 TinyUsageBar(progress: progress(for: "primary"))
@@ -298,7 +487,7 @@ struct StatusBarLabel: View {
 
             if isRefreshing {
                 Circle()
-                    .fill(Color.codexTint)
+                    .fill(Color.codexAccent)
                     .frame(width: 5, height: 5)
             }
         }
@@ -375,9 +564,62 @@ struct SettingsView: View {
     }
 }
 
+private struct MenuSectionCard<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16, content: content)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(Color.codexCard)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color.codexStroke, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.04), radius: 16, x: 0, y: 8)
+    }
+}
+
+private struct WorkspaceBadge: View {
+    let title: String
+    let icon: String
+    var showsChevron = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+
+            if showsChevron {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+            }
+        }
+        .foregroundStyle(Color.codexInk)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.codexCardRaised)
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(Color.codexStroke, lineWidth: 1)
+        )
+    }
+}
+
 private struct WorkspacePicker: View {
     let account: StoredAccount
     let selectedWorkspace: StoredWorkspace
+    let labelTitle: String
     let onSelect: (String) -> Void
 
     var body: some View {
@@ -396,10 +638,11 @@ private struct WorkspacePicker: View {
                 }
             }
         } label: {
-            Text(selectedWorkspace.menuLabel.uppercased())
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            WorkspaceBadge(
+                title: labelTitle,
+                icon: selectedWorkspace.kind == .team ? "building.2.crop.circle" : "person.crop.circle",
+                showsChevron: true
+            )
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
@@ -409,43 +652,43 @@ private struct WorkspacePicker: View {
 private struct AccountListRow: View {
     let account: StoredAccount
     let displayedEmail: String
+    let organizationName: String
     let snapshot: UsageSnapshot?
-    let workspace: StoredWorkspace?
+    let displayMode: CapacityDisplayMode
     let isActive: Bool
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 5) {
                         Text(displayedEmail)
-                            .font(.system(size: 15, weight: .medium))
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.codexInk)
                             .lineLimit(1)
 
-                        if let workspace {
-                            Text(workspace.menuLabel)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+                        Text(organizationName)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.codexSecondary)
+                            .lineLimit(1)
                     }
 
-                    Spacer()
+                    Spacer(minLength: 0)
 
                     HStack(spacing: 6) {
                         if isActive {
                             badge(
                                 title: "Current",
                                 foreground: .white,
-                                background: Color.codexTint
+                                background: Color.codexAccent
                             )
                         }
 
                         badge(
                             title: account.plan.title,
-                            foreground: .secondary,
-                            background: Color.black.opacity(0.05)
+                            foreground: Color.codexInk,
+                            background: Color.codexTrack
                         )
                     }
                 }
@@ -457,19 +700,16 @@ private struct AccountListRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
+            .padding(14)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(isActive ? Color.codexTint.opacity(0.12) : Color.black.opacity(0.02))
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(isActive ? Color.codexAccentSoft : Color.codexCardRaised)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(
-                        isActive ? Color.codexTint.opacity(0.45) : Color.black.opacity(0.06),
-                        lineWidth: 1
-                    )
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(isActive ? Color.codexAccent.opacity(0.45) : Color.codexStroke, lineWidth: 1)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -510,16 +750,21 @@ private struct AccountListRow: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(summaryLabel(for: meter))
                 .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.codexSecondary)
                 .textCase(.uppercase)
 
             HStack(spacing: 8) {
-                UsageBar(progress: meter.usedPercent / 100, height: 8)
-                    .frame(maxWidth: .infinity)
+                UsageBar(
+                    progress: displayMode.progress(for: meter),
+                    height: 8,
+                    fill: meterFillColor(for: meter),
+                    track: Color.codexTrack
+                )
+                .frame(maxWidth: .infinity)
 
-                Text("\(Int(meter.usedPercent.rounded()))%")
+                Text("\(displayMode.percent(for: meter))%")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.codexSecondary)
                     .frame(width: 36, alignment: .trailing)
             }
         }
@@ -559,6 +804,20 @@ private struct AccountListRow: View {
                     .fill(background)
             )
     }
+
+    private func meterFillColor(for meter: UsageMeter) -> Color {
+        let remaining = max(0, min(100 - meter.usedPercent, 100))
+
+        if remaining <= 15 {
+            return Color.codexDanger
+        }
+
+        if remaining <= 35 {
+            return Color.codexWarning
+        }
+
+        return Color.codexAccent
+    }
 }
 
 private struct FooterButton: View {
@@ -568,27 +827,48 @@ private struct FooterButton: View {
 
     var body: some View {
         Button(action: action) {
-            Label(title, systemImage: icon)
-                .font(.system(size: 16, weight: .medium))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+            FooterRowLabel(icon: icon, title: title)
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct FooterRowLabel: View {
+    let icon: String
+    let title: String
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 22, height: 22, alignment: .center)
+                .foregroundStyle(Color.codexSecondary)
+
+            Text(title)
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.codexInk)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
     }
 }
 
 private struct UsageBar: View {
     let progress: Double
     let height: CGFloat
+    var fill: Color = .codexAccent
+    var track: Color = .codexTrack
 
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.black.opacity(0.06))
+                    .fill(track)
 
                 Capsule()
-                    .fill(Color.codexTint)
+                    .fill(fill)
                     .frame(width: max(8, geometry.size.width * max(0, min(progress, 1))))
             }
         }
@@ -604,16 +884,47 @@ private struct TinyUsageBar: View {
 
         ZStack(alignment: .leading) {
             Capsule()
-                .fill(Color.black.opacity(0.10))
+                .fill(Color.codexTrack.opacity(0.9))
                 .frame(width: 34, height: 4)
 
             Capsule()
-                .fill(Color.codexTint)
+                .fill(Color.codexAccent)
                 .frame(width: max(3, 34 * clampedProgress), height: 4)
         }
     }
 }
 
+private struct ScrollChromeTuner: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            guard let scrollView = nsView.enclosingScrollView else {
+                return
+            }
+
+            scrollView.drawsBackground = false
+            scrollView.borderType = .noBorder
+            scrollView.scrollerStyle = .overlay
+            scrollView.scrollerKnobStyle = .dark
+            scrollView.hasHorizontalScroller = false
+        }
+    }
+}
+
 private extension Color {
-    static let codexTint = Color(red: 0.31, green: 0.71, blue: 0.80)
+    static let codexAccent = Color(red: 0.70, green: 0.55, blue: 0.28)
+    static let codexAccentSoft = Color(red: 0.95, green: 0.91, blue: 0.83)
+    static let codexCanvas = Color(red: 0.95, green: 0.94, blue: 0.90)
+    static let codexCanvasShadow = Color(red: 0.92, green: 0.90, blue: 0.85)
+    static let codexCard = Color(red: 0.99, green: 0.98, blue: 0.96)
+    static let codexCardRaised = Color(red: 0.97, green: 0.96, blue: 0.92)
+    static let codexStroke = Color.black.opacity(0.07)
+    static let codexInk = Color(red: 0.21, green: 0.20, blue: 0.18)
+    static let codexSecondary = Color(red: 0.45, green: 0.42, blue: 0.38)
+    static let codexTrack = Color(red: 0.88, green: 0.85, blue: 0.79)
+    static let codexWarning = Color(red: 0.84, green: 0.55, blue: 0.22)
+    static let codexDanger = Color(red: 0.79, green: 0.33, blue: 0.28)
 }
