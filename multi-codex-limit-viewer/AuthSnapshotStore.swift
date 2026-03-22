@@ -76,7 +76,10 @@ final class AuthSnapshotStore {
             throw StoreError.invalidAuthFile("Missing email in auth.json.")
         }
 
-        let workspaces = makeWorkspaces(from: authClaims.organizations, accountID: accountID)
+        let workspaces = mergeWorkspaceDisplayTitles(
+            makeWorkspaces(from: authClaims.organizations, accountID: accountID),
+            existingWorkspaces: existingAccount?.workspaces ?? []
+        )
         let selectedWorkspaceID = selectionID(
             from: existingAccount?.selectedWorkspaceID,
             available: workspaces
@@ -132,6 +135,15 @@ final class AuthSnapshotStore {
         try? fileManager.removeItem(at: url)
     }
 
+    func removeStoredAccount(_ account: StoredAccount) throws {
+        let accountDirectoryURL = codexHomeURL(for: account)
+        guard fileManager.fileExists(atPath: accountDirectoryURL.path) else {
+            return
+        }
+
+        try fileManager.removeItem(at: accountDirectoryURL)
+    }
+
     func activateAccount(_ account: StoredAccount) throws {
         let sourceURL = storedAuthURL(for: account)
         guard fileManager.fileExists(atPath: sourceURL.path) else {
@@ -169,6 +181,7 @@ final class AuthSnapshotStore {
             StoredWorkspace(
                 id: organization.id,
                 title: organization.title,
+                displayTitleOverride: nil,
                 kind: organization.title.caseInsensitiveCompare("Personal") == .orderedSame ? .personal : .team,
                 role: organization.role,
                 isDefault: organization.isDefault
@@ -180,6 +193,7 @@ final class AuthSnapshotStore {
                 StoredWorkspace(
                     id: accountID,
                     title: "Personal",
+                    displayTitleOverride: nil,
                     kind: .personal,
                     role: nil,
                     isDefault: true
@@ -205,6 +219,43 @@ final class AuthSnapshotStore {
         }
 
         return workspaces.first?.id ?? ""
+    }
+
+    func currentAccountID() throws -> String? {
+        guard fileManager.fileExists(atPath: currentAuthURL().path) else {
+            return nil
+        }
+
+        let data = try Data(contentsOf: currentAuthURL())
+        let authFile = try JSONDecoder().decode(ChatGPTAuthFile.self, from: data)
+        if let accountID = authFile.tokens.accountID {
+            return accountID
+        }
+
+        let claims = try decodeClaims(from: authFile.tokens.idToken)
+        return claims.openAIAuth.chatgptAccountID
+    }
+
+    private func mergeWorkspaceDisplayTitles(
+        _ workspaces: [StoredWorkspace],
+        existingWorkspaces: [StoredWorkspace]
+    ) -> [StoredWorkspace] {
+        let overridesByWorkspaceID: [String: String] = Dictionary(
+            uniqueKeysWithValues: existingWorkspaces.compactMap { workspace in
+                guard let displayTitleOverride = workspace.trimmedDisplayTitleOverride else {
+                    return nil
+                }
+                return (workspace.id, displayTitleOverride)
+            }
+        )
+
+        return workspaces.map { workspace in
+            var updatedWorkspace = workspace
+            if let displayTitleOverride = overridesByWorkspaceID[workspace.id] {
+                updatedWorkspace.displayTitleOverride = displayTitleOverride
+            }
+            return updatedWorkspace
+        }
     }
 
     private func decodeClaims(from jwt: String?) throws -> JWTClaims {

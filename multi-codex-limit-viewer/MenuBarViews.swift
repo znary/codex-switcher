@@ -67,6 +67,12 @@ struct MenuBarRootView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var viewModel: MenuBarViewModel
+    @State private var accountRowFrames: [String: CGRect] = [:]
+    @State private var draggingAccountID: String?
+    @State private var draggingPointerY: CGFloat?
+    @State private var draggingPointerOffsetY: CGFloat = 0
+
+    private let accountsListCoordinateSpace = "MenuBarRootView.accounts"
 
     private var capacityDisplayMode: CapacityDisplayMode {
         CapacityDisplayMode(rawValue: capacityDisplayModeRawValue) ?? .remaining
@@ -109,8 +115,9 @@ struct MenuBarRootView: View {
                         .foregroundStyle(Color.codexInk)
 
                     Text(updatedText(for: account.id))
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.codexSecondary)
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.codexSecondary.opacity(0.72))
+                        .padding(.leading, 6)
 
                     if let error = viewModel.runtimeState(for: account.id).lastError {
                         diagnosticsErrorBlock(error)
@@ -195,23 +202,94 @@ struct MenuBarRootView: View {
                 .font(.system(size: 22, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.codexInk)
 
-            ForEach(viewModel.accounts) { account in
-                AccountListRow(
-                    displayedEmail: viewModel.displayedEmail(for: account),
-                    organizationName: viewModel.accountSubtitle(for: account),
-                    snapshot: viewModel.snapshot(for: account),
-                    displayMode: capacityDisplayMode,
-                    isActive: viewModel.activeAccount?.id == account.id,
-                    currentBadgeTitle: viewModel.text(.current),
-                    planTitle: viewModel.localizedPlanTitle(for: account.plan),
-                    meterSummaryLabel: { meter in
-                        viewModel.meterSummaryLabel(for: meter)
+            ZStack(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(viewModel.accounts) { account in
+                        accountRow(account, isInteractive: true)
+                            .background(AccountRowFrameReader(accountID: account.id))
+                            .opacity(draggingAccountID == account.id ? 0.001 : 1)
+                            .simultaneousGesture(accountReorderGesture(for: account))
                     }
-                ) {
-                    viewModel.selectAccount(account.id)
+                }
+
+                if let draggedAccount {
+                    accountRow(draggedAccount, isInteractive: false)
+                        .allowsHitTesting(false)
+                        .offset(y: draggedAccountOverlayY)
+                        .zIndex(2)
+                }
+            }
+            .coordinateSpace(name: accountsListCoordinateSpace)
+            .onPreferenceChange(AccountRowFramePreferenceKey.self) { frames in
+                accountRowFrames = frames
+
+                if let draggingAccountID,
+                   !viewModel.accounts.contains(where: { $0.id == draggingAccountID }) {
+                    clearAccountDrag()
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func accountRow(_ account: StoredAccount, isInteractive: Bool) -> some View {
+        let isDragging = draggingAccountID == account.id
+        let row = AccountListRow(
+            displayedEmail: viewModel.displayedEmail(for: account),
+            organizationName: viewModel.accountSubtitle(for: account),
+            snapshot: viewModel.snapshot(for: account),
+            displayMode: capacityDisplayMode,
+            isActive: viewModel.activeAccount?.id == account.id,
+            currentBadgeTitle: viewModel.text(.current),
+            planTitle: viewModel.localizedPlanTitle(for: account.plan),
+            meterSummaryLabel: { meter in
+                viewModel.meterSummaryLabel(for: meter)
+            }
+        ) {
+            guard isInteractive else {
+                return
+            }
+
+            viewModel.selectAccount(account.id)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .scaleEffect(isDragging ? 1.015 : 1)
+        .shadow(
+            color: Color.black.opacity(isDragging ? 0.12 : 0),
+            radius: isDragging ? 18 : 0,
+            x: 0,
+            y: isDragging ? 12 : 0
+        )
+        .zIndex(isDragging ? 2 : 0)
+
+        if isInteractive {
+            row.contextMenu {
+                Button(role: .destructive) {
+                    clearAccountDrag()
+                    viewModel.deleteAccount(account.id)
+                } label: {
+                    Label(viewModel.text(.deleteAccount), systemImage: "trash")
+                }
+            }
+        } else {
+            row
+        }
+    }
+
+    private var draggedAccount: StoredAccount? {
+        guard let draggingAccountID else {
+            return nil
+        }
+
+        return viewModel.accounts.first(where: { $0.id == draggingAccountID })
+    }
+
+    private var draggedAccountOverlayY: CGFloat {
+        guard let draggingPointerY else {
+            return 0
+        }
+
+        return draggingPointerY - draggingPointerOffsetY
     }
 
     private var footerActions: some View {
@@ -402,7 +480,11 @@ struct MenuBarRootView: View {
     }
 
     private func capacityAccountHeader(account: StoredAccount) -> some View {
-        VStack(alignment: .trailing, spacing: 6) {
+        let visibleWorkspaces = account.workspaces.filter { workspace in
+            viewModel.workspaceMenuLabel(for: workspace) != nil
+        }
+
+        return VStack(alignment: .trailing, spacing: 6) {
             Text(viewModel.displayedEmail(for: account))
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.codexInk)
@@ -410,20 +492,25 @@ struct MenuBarRootView: View {
                 .truncationMode(.middle)
                 .frame(maxWidth: 220, alignment: .trailing)
 
-            if account.workspaces.count > 1, let selectedWorkspace = account.selectedWorkspace {
+            if
+                visibleWorkspaces.count > 1,
+                let selectedWorkspace = account.selectedWorkspace,
+                visibleWorkspaces.contains(where: { $0.id == selectedWorkspace.id }),
+                let labelTitle = viewModel.accountSubtitle(for: account)
+            {
                 WorkspacePicker(
-                    account: account,
+                    workspaces: visibleWorkspaces,
                     selectedWorkspace: selectedWorkspace,
-                    labelTitle: viewModel.accountSubtitle(for: account),
+                    labelTitle: labelTitle,
                     menuLabel: { workspace in
-                        viewModel.workspaceMenuLabel(for: workspace)
+                        viewModel.workspaceMenuLabel(for: workspace) ?? ""
                     },
                     onSelect: { workspaceID in
                         viewModel.selectWorkspace(workspaceID, for: account.id)
                     }
                 )
-            } else {
-                Text(viewModel.accountSubtitle(for: account))
+            } else if let organizationName = viewModel.accountSubtitle(for: account) {
+                Text(organizationName)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.codexSecondary)
                     .lineLimit(1)
@@ -431,6 +518,61 @@ struct MenuBarRootView: View {
                     .frame(maxWidth: 220, alignment: .trailing)
             }
         }
+    }
+
+    private func accountReorderGesture(for account: StoredAccount) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.28)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(accountsListCoordinateSpace)))
+            .onChanged { value in
+                guard viewModel.accounts.count > 1 else {
+                    return
+                }
+
+                switch value {
+                case .second(true, let drag?):
+                    beginDraggingAccountIfNeeded(account.id, pointerY: drag.startLocation.y)
+                    draggingPointerY = drag.location.y
+                    moveDraggedAccount(account.id, pointerY: drag.location.y)
+                default:
+                    break
+                }
+            }
+            .onEnded { _ in
+                clearAccountDrag()
+            }
+    }
+
+    private func beginDraggingAccountIfNeeded(_ accountID: String, pointerY: CGFloat) {
+        guard draggingAccountID != accountID else {
+            return
+        }
+
+        draggingAccountID = accountID
+        draggingPointerY = pointerY
+
+        if let frame = accountRowFrames[accountID] {
+            draggingPointerOffsetY = pointerY - frame.minY
+        } else {
+            draggingPointerOffsetY = 0
+        }
+    }
+
+    private func moveDraggedAccount(_ accountID: String, pointerY: CGFloat) {
+        let orderedOtherAccounts = viewModel.accounts.filter { $0.id != accountID }
+        let targetIndex = orderedOtherAccounts.firstIndex { account in
+            guard let frame = accountRowFrames[account.id] else {
+                return false
+            }
+            return pointerY < frame.midY
+        } ?? orderedOtherAccounts.count
+
+        viewModel.moveAccount(accountID, toIndex: targetIndex)
+    }
+
+    private func clearAccountDrag() {
+        draggingAccountID = nil
+        draggingPointerY = nil
+        draggingPointerOffsetY = 0
     }
 }
 
@@ -471,103 +613,88 @@ struct SettingsView: View {
     @ObservedObject var viewModel: MenuBarViewModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                SettingsPanelSection(title: viewModel.text(.accounts)) {
-                    SettingsPanelRow {
-                        Text("\(viewModel.text(.importedAccounts)): \(viewModel.accounts.count)")
-                            .font(.system(size: 18, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.codexInk)
-                    }
-
-                    SettingsPanelDivider()
-
-                    SettingsPanelRow {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(viewModel.text(.storedAt))
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(Color.codexSecondary)
-                                .textCase(.uppercase)
-
-                            Text(viewModel.storagePath)
-                                .font(.system(size: 14, design: .monospaced))
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    SettingsPanelSection(title: viewModel.text(.accounts)) {
+                        SettingsPanelRow {
+                            Text("\(viewModel.text(.importedAccounts)): \(viewModel.accounts.count)")
+                                .font(.system(size: 18, weight: .semibold, design: .rounded))
                                 .foregroundStyle(Color.codexInk)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
                         }
-                    }
 
-                    SettingsPanelDivider()
+                        SettingsPanelDivider()
 
-                    SettingsPanelRow {
-                        HStack(spacing: 12) {
-                            SettingsActionPill(title: viewModel.text(.addAccount)) {
-                                Task {
-                                    await viewModel.addAccount()
-                                }
-                            }
+                        SettingsPanelRow {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(viewModel.text(.storedAt))
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(Color.codexSecondary)
+                                    .textCase(.uppercase)
 
-                            SettingsActionPill(title: viewModel.text(.refreshNow)) {
-                                Task {
-                                    await viewModel.refreshAll()
-                                }
-                            }
-                        }
-                    }
-                }
-
-                SettingsPanelSection(title: viewModel.text(.language)) {
-                    SettingsPanelRow {
-                        VStack(alignment: .leading, spacing: 14) {
-                            HStack(alignment: .center, spacing: 12) {
-                                Text(viewModel.text(.language))
-                                    .font(.system(size: 15, weight: .semibold))
+                                Text(viewModel.storagePath)
+                                    .font(.system(size: 14, design: .monospaced))
                                     .foregroundStyle(Color.codexInk)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
 
-                                Spacer(minLength: 12)
+                        SettingsPanelDivider()
 
-                                Picker(
-                                    viewModel.text(.language),
-                                    selection: Binding(
-                                        get: { viewModel.languagePreference },
-                                        set: { viewModel.setLanguage($0) }
-                                    )
-                                ) {
-                                    ForEach(viewModel.languageOptions) { option in
-                                        Text(viewModel.languageDisplayName(for: option))
-                                            .tag(option)
+                        SettingsPanelRow {
+                            HStack(spacing: 12) {
+                                SettingsActionPill(title: viewModel.text(.addAccount)) {
+                                    Task {
+                                        await viewModel.addAccount()
                                     }
                                 }
-                                .labelsHidden()
-                                .pickerStyle(.menu)
-                            }
 
-                            Text(viewModel.text(.chooseAppLanguage))
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(Color.codexSecondary)
+                                SettingsActionPill(title: viewModel.text(.refreshNow)) {
+                                    Task {
+                                        await viewModel.refreshAll()
+                                    }
+                                }
+                            }
                         }
                     }
-                }
 
-                SettingsPanelSection(title: viewModel.text(.codexCLI)) {
-                    SettingsPanelRow {
-                        Text(viewModel.codexExecutablePath ?? viewModel.text(.codexExecutableUnresolved))
-                            .font(.system(size: 14, design: .monospaced))
-                            .foregroundStyle(Color.codexInk)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
+                    SettingsPanelSection(title: viewModel.text(.language)) {
+                        SettingsPanelRow {
+                            VStack(alignment: .leading, spacing: 14) {
+                                HStack(alignment: .center, spacing: 12) {
+                                    Text(viewModel.text(.language))
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(Color.codexInk)
+
+                                    Spacer(minLength: 12)
+
+                                    Picker(
+                                        viewModel.text(.language),
+                                        selection: Binding(
+                                            get: { viewModel.languagePreference },
+                                            set: { viewModel.setLanguage($0) }
+                                        )
+                                    ) {
+                                        ForEach(viewModel.languageOptions) { option in
+                                            Text(viewModel.languageDisplayName(for: option))
+                                                .tag(option)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .pickerStyle(.menu)
+                                }
+
+                                Text(viewModel.text(.chooseAppLanguage))
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Color.codexSecondary)
+                            }
+                        }
                     }
-                }
 
-                SettingsPanelSection(title: viewModel.text(.diagnostics)) {
-                    SettingsPanelRow {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(viewModel.text(.logFile))
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(Color.codexSecondary)
-                                .textCase(.uppercase)
-
-                            Text(viewModel.diagnosticsLogPath)
+                    SettingsPanelSection(title: viewModel.text(.codexCLI)) {
+                        SettingsPanelRow {
+                            Text(viewModel.codexExecutablePath ?? viewModel.text(.codexExecutableUnresolved))
                                 .font(.system(size: 14, design: .monospaced))
                                 .foregroundStyle(Color.codexInk)
                                 .textSelection(.enabled)
@@ -575,64 +702,82 @@ struct SettingsView: View {
                         }
                     }
 
-                    SettingsPanelDivider()
+                    SettingsPanelSection(title: viewModel.text(.diagnostics)) {
+                        SettingsPanelRow {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(viewModel.text(.logFile))
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(Color.codexSecondary)
+                                    .textCase(.uppercase)
 
-                    SettingsPanelRow {
-                        HStack(spacing: 12) {
-                            SettingsActionPill(title: viewModel.text(.copyDiagnostics)) {
-                                viewModel.copyDiagnostics()
+                                Text(viewModel.diagnosticsLogPath)
+                                    .font(.system(size: 14, design: .monospaced))
+                                    .foregroundStyle(Color.codexInk)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
+                        }
 
-                            SettingsActionPill(title: viewModel.text(.revealLogInFinder)) {
-                                viewModel.revealDiagnosticsLog()
+                        SettingsPanelDivider()
+
+                        SettingsPanelRow {
+                            HStack(spacing: 12) {
+                                SettingsActionPill(title: viewModel.text(.copyDiagnostics)) {
+                                    viewModel.copyDiagnostics()
+                                }
+
+                                SettingsActionPill(title: viewModel.text(.revealLogInFinder)) {
+                                    viewModel.revealDiagnosticsLog()
+                                }
                             }
+                        }
+
+                        SettingsPanelDivider()
+
+                        SettingsPanelRow {
+                            Text(viewModel.diagnosticsReport.isEmpty ? viewModel.text(.noDiagnosticsCollected) : viewModel.diagnosticsReport)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(Color.codexInk)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(14)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .fill(Color.codexCardRaised)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(Color.codexStroke, lineWidth: 1)
+                                )
                         }
                     }
 
-                    SettingsPanelDivider()
-
-                    SettingsPanelRow {
-                        Text(viewModel.diagnosticsReport.isEmpty ? viewModel.text(.noDiagnosticsCollected) : viewModel.diagnosticsReport)
-                            .font(.system(size: 11, design: .monospaced))
+                    SettingsPanelSection(title: viewModel.text(.howToAddMoreAccounts)) {
+                        SettingsPanelRow {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text(viewModel.text(.howToAddMoreAccountsLine1))
+                                Text(viewModel.text(.howToAddMoreAccountsLine2))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(Color.codexInk)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(14)
-                            .background(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .fill(Color.codexCardRaised)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .stroke(Color.codexStroke, lineWidth: 1)
-                            )
-                    }
-                }
-
-                SettingsPanelSection(title: viewModel.text(.howToAddMoreAccounts)) {
-                    SettingsPanelRow {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(viewModel.text(.howToAddMoreAccountsLine1))
-                            Text(viewModel.text(.howToAddMoreAccountsLine2))
-                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(Color.codexInk)
                     }
                 }
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: max(geometry.size.width, 0), alignment: .topLeading)
             }
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .background(ScrollChromeTuner())
-        .background(
-            LinearGradient(
-                colors: [Color.codexCanvas, Color.codexCanvasShadow],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(ScrollChromeTuner())
+            .background(
+                LinearGradient(
+                    colors: [Color.codexCanvas, Color.codexCanvasShadow],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
             )
-        )
-        .frame(width: 520, height: 520)
+        }
         .background(WindowConfigurator(identifier: MenuBarViewModel.settingsWindowIdentifier))
     }
 }
@@ -763,7 +908,7 @@ private struct WorkspaceBadge: View {
 }
 
 private struct WorkspacePicker: View {
-    let account: StoredAccount
+    let workspaces: [StoredWorkspace]
     let selectedWorkspace: StoredWorkspace
     let labelTitle: String
     let menuLabel: (StoredWorkspace) -> String
@@ -771,7 +916,7 @@ private struct WorkspacePicker: View {
 
     var body: some View {
         Menu {
-            ForEach(account.workspaces) { workspace in
+            ForEach(workspaces) { workspace in
                 Button {
                     onSelect(workspace.id)
                 } label: {
@@ -797,7 +942,7 @@ private struct WorkspacePicker: View {
 
 private struct AccountListRow: View {
     let displayedEmail: String
-    let organizationName: String
+    let organizationName: String?
     let snapshot: UsageSnapshot?
     let displayMode: CapacityDisplayMode
     let isActive: Bool
@@ -819,11 +964,13 @@ private struct AccountListRow: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
 
-                        Text(organizationName)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.codexSecondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                        if let organizationName {
+                            Text(organizationName)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Color.codexSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
                     }
 
                     Spacer(minLength: 0)
@@ -1031,6 +1178,28 @@ private struct TinyUsageBar: View {
     }
 }
 
+private struct AccountRowFrameReader: View {
+    let accountID: String
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .preference(
+                    key: AccountRowFramePreferenceKey.self,
+                    value: [accountID: proxy.frame(in: .named("MenuBarRootView.accounts"))]
+                )
+        }
+    }
+}
+
+private struct AccountRowFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 private struct ScrollChromeTuner: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         NSView(frame: .zero)
@@ -1070,6 +1239,7 @@ private struct WindowConfigurator: NSViewRepresentable {
 
             window.isReleasedWhenClosed = false
             window.tabbingMode = .disallowed
+            window.minSize = NSSize(width: 720, height: 560)
 
             var behavior = window.collectionBehavior
             behavior.insert(.moveToActiveSpace)

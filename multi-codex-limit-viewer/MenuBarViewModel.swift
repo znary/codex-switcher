@@ -5,6 +5,7 @@
 
 import AppKit
 import Combine
+import CoreGraphics
 import Foundation
 
 @MainActor
@@ -24,6 +25,7 @@ final class MenuBarViewModel: ObservableObject {
     private let loginFlow: CodexLoginFlow
     private let resolver: CodexExecutableResolver
     private let logger: DiagnosticsLogStore
+    private let codexWindowTitleReader: CodexWindowTitleReader
     private var autoRefreshTask: Task<Void, Never>?
 
     init(
@@ -31,13 +33,15 @@ final class MenuBarViewModel: ObservableObject {
         probe: CodexUsageProbe? = nil,
         loginFlow: CodexLoginFlow? = nil,
         resolver: CodexExecutableResolver? = nil,
-        logger: DiagnosticsLogStore? = nil
+        logger: DiagnosticsLogStore? = nil,
+        codexWindowTitleReader: CodexWindowTitleReader? = nil
     ) {
         self.store = store ?? AuthSnapshotStore()
         self.probe = probe ?? CodexUsageProbe()
         self.loginFlow = loginFlow ?? CodexLoginFlow()
         self.resolver = resolver ?? CodexExecutableResolver()
         self.logger = logger ?? DiagnosticsLogStore(rootURL: self.store.rootURL)
+        self.codexWindowTitleReader = codexWindowTitleReader ?? CodexWindowTitleReader()
         state = (try? self.store.loadState()) ?? .empty
         runtimeStates = [:]
         self.logger.append("App launched. storage=\(self.store.rootURL.path)")
@@ -241,6 +245,7 @@ final class MenuBarViewModel: ObservableObject {
             }
 
             apply(outcomes: outcomes)
+            applyVisibleCodexWorkspaceTitleIfAvailable()
             try saveState()
             let failureCount = outcomes.filter {
                 if case .failure = $0.result {
@@ -294,6 +299,65 @@ final class MenuBarViewModel: ObservableObject {
             }
             state.accounts[index].selectedWorkspaceID = workspaceID
             state.activeAccountID = accountID
+        }
+    }
+
+    func deleteAccount(_ accountID: String) {
+        guard let accountIndex = state.accounts.firstIndex(where: { $0.id == accountID }) else {
+            return
+        }
+
+        let account = state.accounts[accountIndex]
+        let remainingAccounts = state.accounts.enumerated().compactMap { index, storedAccount in
+            index == accountIndex ? nil : storedAccount
+        }
+
+        if state.activeAccountID == accountID, let replacementAccount = remainingAccounts.first {
+            do {
+                try store.activateAccount(replacementAccount)
+            } catch {
+                transientError = error.localizedDescription
+                log("Delete account failed while switching active account: \(error.localizedDescription)")
+                return
+            }
+        }
+
+        do {
+            try store.removeStoredAccount(account)
+        } catch {
+            transientError = error.localizedDescription
+            log("Delete account failed while removing stored auth: \(error.localizedDescription)")
+            return
+        }
+
+        runtimeStates.removeValue(forKey: accountID)
+
+        updateState { state in
+            state.accounts.removeAll { $0.id == accountID }
+
+            if state.activeAccountID == accountID {
+                state.activeAccountID = remainingAccounts.first?.id
+            } else if state.activeAccountID == nil {
+                state.activeAccountID = state.accounts.first?.id
+            }
+        }
+
+        log("Deleted account \(account.maskedEmail).")
+    }
+
+    func moveAccount(_ accountID: String, toIndex requestedIndex: Int) {
+        updateState { state in
+            guard let currentIndex = state.accounts.firstIndex(where: { $0.id == accountID }) else {
+                return
+            }
+
+            let targetIndex = max(0, min(requestedIndex, max(state.accounts.count - 1, 0)))
+            guard currentIndex != targetIndex else {
+                return
+            }
+
+            let account = state.accounts.remove(at: currentIndex)
+            state.accounts.insert(account, at: targetIndex)
         }
     }
 
@@ -368,15 +432,12 @@ final class MenuBarViewModel: ObservableObject {
         account.organizationName(for: workspace)
     }
 
-    func accountSubtitle(for account: StoredAccount) -> String {
-        if let organizationName = account.organizationName(for: account.selectedWorkspace) {
-            return organizationName
-        }
-        return workspaceKindTitle(for: account, workspace: account.selectedWorkspace)
+    func accountSubtitle(for account: StoredAccount) -> String? {
+        account.organizationName(for: account.selectedWorkspace)
     }
 
-    func workspaceMenuLabel(for workspace: StoredWorkspace) -> String {
-        workspace.organizationName ?? workspaceKindTitle(for: workspace.kind)
+    func workspaceMenuLabel(for workspace: StoredWorkspace) -> String? {
+        workspace.organizationName
     }
 
     func updatedText(since date: Date?) -> String {
@@ -474,10 +535,14 @@ final class MenuBarViewModel: ObservableObject {
                     updatedAccounts[accountIndex].maskedEmail = maskEmailAddress(probeResult.email)
                     updatedAccounts[accountIndex].plan = probeResult.plan
                     if let workspaces = probeResult.workspaces, !workspaces.isEmpty {
-                        updatedAccounts[accountIndex].workspaces = workspaces
+                        let mergedWorkspaces = mergeWorkspaceDisplayTitles(
+                            workspaces,
+                            existingWorkspaces: updatedAccounts[accountIndex].workspaces
+                        )
+                        updatedAccounts[accountIndex].workspaces = mergedWorkspaces
                         updatedAccounts[accountIndex].selectedWorkspaceID = preferredWorkspaceID(
                             existingSelectionID: updatedAccounts[accountIndex].selectedWorkspaceID,
-                            available: workspaces
+                            available: mergedWorkspaces
                         )
                     }
                     updatedAccounts[accountIndex].lastKnownRefreshAt = probeResult.snapshot.capturedAt
@@ -520,7 +585,6 @@ final class MenuBarViewModel: ObservableObject {
                 state.accounts[existingIndex] = importedAccount
             } else {
                 state.accounts.append(importedAccount)
-                state.accounts.sort { $0.email.localizedCaseInsensitiveCompare($1.email) == .orderedAscending }
             }
 
             if setActive {
@@ -601,6 +665,91 @@ final class MenuBarViewModel: ObservableObject {
         }
 
         return workspaces.first?.id ?? existingSelectionID
+    }
+
+    private func mergeWorkspaceDisplayTitles(
+        _ workspaces: [StoredWorkspace],
+        existingWorkspaces: [StoredWorkspace]
+    ) -> [StoredWorkspace] {
+        let overridesByWorkspaceID: [String: String] = Dictionary(
+            uniqueKeysWithValues: existingWorkspaces.compactMap { workspace in
+                guard let displayTitleOverride = workspace.trimmedDisplayTitleOverride else {
+                    return nil
+                }
+                return (workspace.id, displayTitleOverride)
+            }
+        )
+
+        return workspaces.map { workspace in
+            var updatedWorkspace = workspace
+            if let displayTitleOverride = overridesByWorkspaceID[workspace.id] {
+                updatedWorkspace.displayTitleOverride = displayTitleOverride
+            }
+            return updatedWorkspace
+        }
+    }
+
+    private func applyVisibleCodexWorkspaceTitleIfAvailable() {
+        guard
+            let currentAccountID = try? store.currentAccountID(),
+            let rawWindowTitle = codexWindowTitleReader.currentVisibleWindowTitle(),
+            let displayTitleOverride = normalizedCodexWorkspaceTitle(from: rawWindowTitle),
+            let accountIndex = state.accounts.firstIndex(where: { $0.id == currentAccountID })
+        else {
+            return
+        }
+
+        let account = state.accounts[accountIndex]
+        guard
+            let workspaceIndex = account.workspaces.firstIndex(where: { $0.id == account.selectedWorkspaceID })
+                ?? account.workspaces.indices.first
+        else {
+            return
+        }
+
+        if account.workspaces[workspaceIndex].trimmedDisplayTitleOverride == displayTitleOverride {
+            return
+        }
+
+        updateState(save: false) { state in
+            guard let accountIndex = state.accounts.firstIndex(where: { $0.id == currentAccountID }) else {
+                return
+            }
+
+            let selectedWorkspaceID = state.accounts[accountIndex].selectedWorkspaceID
+            guard
+                let workspaceIndex = state.accounts[accountIndex].workspaces.firstIndex(where: { $0.id == selectedWorkspaceID })
+                    ?? state.accounts[accountIndex].workspaces.indices.first
+            else {
+                return
+            }
+
+            state.accounts[accountIndex].workspaces[workspaceIndex].displayTitleOverride = displayTitleOverride
+        }
+
+        log("Observed Codex window title for account \(account.maskedEmail): \(displayTitleOverride)")
+    }
+
+    private func normalizedCodexWorkspaceTitle(from rawWindowTitle: String) -> String? {
+        var title = rawWindowTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        for suffix in [" - Codex", " | Codex", " · Codex", " — Codex"] {
+            if let range = title.range(of: suffix, options: [.caseInsensitive, .backwards]) {
+                title = String(title[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
+        }
+
+        guard !title.isEmpty else {
+            return nil
+        }
+
+        let ignoredTitles = ["Codex", "ChatGPT", "OpenAI Codex"]
+        guard !ignoredTitles.contains(where: { title.caseInsensitiveCompare($0) == .orderedSame }) else {
+            return nil
+        }
+
+        return title
     }
 
     private func refreshDiagnosticsReport() {
@@ -685,6 +834,19 @@ final class MenuBarViewModel: ObservableObject {
         }
 
         return lines.joined(separator: "\n")
+    }
+}
+
+struct CodexWindowTitleReader: Sendable {
+    nonisolated func currentVisibleWindowTitle() -> String? {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+
+        return (windows.first { window in
+            (window[kCGWindowOwnerName as String] as? String) == "Codex"
+                && !((window[kCGWindowName as String] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        })
+        .flatMap { $0[kCGWindowName as String] as? String }?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

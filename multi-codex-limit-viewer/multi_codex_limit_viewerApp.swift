@@ -25,5 +25,6 @@ struct multi_codex_limit_viewerApp: App {
         Window("Settings", id: MenuBarViewModel.settingsWindowIdentifier) {
             SettingsView(viewModel: viewModel)
         }
+        .defaultSize(width: 900, height: 680)
     }
 }

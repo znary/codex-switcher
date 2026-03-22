@@ -73,6 +73,7 @@ enum AppTextKey: String, Codable, CaseIterable, Sendable {
     case settings
     case accounts
     case addAccount
+    case deleteAccount
     case statusPage
     case copyDiagnostics
     case openLog
@@ -134,6 +135,7 @@ private enum AppTextCatalog {
         .settings: "Settings",
         .accounts: "Accounts",
         .addAccount: "Add Account",
+        .deleteAccount: "Delete Account",
         .statusPage: "Status Page",
         .copyDiagnostics: "Copy Diagnostics",
         .openLog: "Open Log",
@@ -194,6 +196,7 @@ private enum AppTextCatalog {
         .settings: "设置",
         .accounts: "账户",
         .addAccount: "添加账户",
+        .deleteAccount: "删除账户",
         .statusPage: "状态页",
         .copyDiagnostics: "复制诊断信息",
         .openLog: "打开日志",
@@ -344,6 +347,7 @@ enum PlanBadge: String, Codable, CaseIterable, Hashable, Sendable {
 struct StoredWorkspace: Codable, Identifiable, Hashable, Sendable {
     let id: String
     var title: String
+    var displayTitleOverride: String?
     var kind: WorkspaceKind
     var role: String?
     var isDefault: Bool
@@ -361,12 +365,13 @@ struct StoredWorkspace: Codable, Identifiable, Hashable, Sendable {
     }
 
     nonisolated var organizationName: String? {
-        guard kind != .personal else {
-            return nil
+        if let displayTitleOverride = trimmedDisplayTitleOverride,
+           !Self.shouldHideOrganizationName(displayTitleOverride) {
+            return displayTitleOverride
         }
 
         let normalizedTitle = trimmedTitle
-        guard !normalizedTitle.isEmpty else {
+        guard !Self.shouldHideOrganizationName(normalizedTitle) else {
             return nil
         }
 
@@ -383,6 +388,39 @@ struct StoredWorkspace: Codable, Identifiable, Hashable, Sendable {
 
     nonisolated var displayName: String {
         organizationDisplayName
+    }
+
+    nonisolated var trimmedDisplayTitleOverride: String? {
+        guard let displayTitleOverride else {
+            return nil
+        }
+
+        let normalizedTitle = displayTitleOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalizedTitle.isEmpty ? nil : normalizedTitle
+    }
+
+    nonisolated private static func isPersonalDisplayTitle(_ title: String) -> Bool {
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalizedTitle.caseInsensitiveCompare("Personal") == .orderedSame
+            || normalizedTitle == "个人"
+    }
+
+    nonisolated private static func shouldHideOrganizationName(_ title: String) -> Bool {
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTitle.isEmpty else {
+            return true
+        }
+
+        if isPersonalDisplayTitle(normalizedTitle)
+            || normalizedTitle.caseInsensitiveCompare("Team") == .orderedSame
+            || normalizedTitle == "团队" {
+            return true
+        }
+
+        let looksLikeDomainSlug = normalizedTitle.contains(".")
+            && !normalizedTitle.contains(" ")
+            && !normalizedTitle.contains("/")
+        return looksLikeDomainSlug
     }
 }
 
@@ -407,11 +445,7 @@ struct StoredAccount: Codable, Identifiable, Hashable, Sendable {
     }
 
     func organizationName(for workspace: StoredWorkspace?) -> String? {
-        if let workspace, let organizationName = workspace.organizationName {
-            return organizationName
-        }
-
-        return preferredOrganizationWorkspace?.organizationName
+        workspace?.organizationName
     }
 
     func displayWorkspaceKind(for workspace: StoredWorkspace?) -> WorkspaceKind {
