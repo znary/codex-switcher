@@ -125,8 +125,10 @@ enum AppTextKey: String, Codable, CaseIterable, Sendable {
     case general
     case accounts
     case addAccount
+    case importCurrentAccount
     case deleteAccount
     case statusPage
+    case usageDashboard
     case copyDiagnostics
     case openLog
     case showEmails
@@ -145,6 +147,8 @@ enum AppTextKey: String, Codable, CaseIterable, Sendable {
     case chooseAppLanguage
     case codexCLI
     case diagnostics
+    case about
+    case aboutDescription
     case revealLogInFinder
     case noDiagnosticsCollected
     case howToAddMoreAccounts
@@ -153,6 +157,8 @@ enum AppTextKey: String, Codable, CaseIterable, Sendable {
     case importedAccounts
     case storedAt
     case logFile
+    case version
+    case github
     case codexExecutableUnresolved
     case workspaceKindPersonal
     case workspaceKindTeam
@@ -192,8 +198,10 @@ private enum AppTextCatalog {
         .general: "General",
         .accounts: "Accounts",
         .addAccount: "Add Account",
-        .deleteAccount: "Delete Account",
+        .importCurrentAccount: "Import Current Account",
+        .deleteAccount: "Remove From List",
         .statusPage: "Status Page",
+        .usageDashboard: "Usage Dashboard",
         .copyDiagnostics: "Copy Diagnostics",
         .openLog: "Open Log",
         .showEmails: "Show Emails",
@@ -212,14 +220,18 @@ private enum AppTextCatalog {
         .chooseAppLanguage: "Choose the app language.",
         .codexCLI: "Codex CLI",
         .diagnostics: "Diagnostics",
+        .about: "About",
+        .aboutDescription: "Monitor multiple ChatGPT Codex accounts from your Mac menu bar.",
         .revealLogInFinder: "Reveal Log In Finder",
         .noDiagnosticsCollected: "No diagnostics collected yet.",
         .howToAddMoreAccounts: "How To Add More Accounts",
-        .howToAddMoreAccountsLine1: "This app first snapshots the account currently logged into Codex.",
-        .howToAddMoreAccountsLine2: "If that account is already imported, Add Account opens the Codex browser login flow and saves the new account into its own storage.",
+        .howToAddMoreAccountsLine1: "Use Import Current Account to snapshot the Codex account already logged in on this Mac.",
+        .howToAddMoreAccountsLine2: "Use Add Account to open the Codex browser login flow and save another account into its own storage.",
         .importedAccounts: "Imported accounts",
         .storedAt: "Stored at",
         .logFile: "Log file",
+        .version: "Version",
+        .github: "GitHub",
         .codexExecutableUnresolved: "codex executable not resolved yet",
         .workspaceKindPersonal: "Personal",
         .workspaceKindTeam: "Team",
@@ -258,8 +270,10 @@ private enum AppTextCatalog {
         .general: "通用",
         .accounts: "账户",
         .addAccount: "添加账户",
-        .deleteAccount: "删除账户",
-        .statusPage: "状态页",
+        .importCurrentAccount: "导入当前账户",
+        .deleteAccount: "从列表移除",
+        .statusPage: "当前状态",
+        .usageDashboard: "数据看板",
         .copyDiagnostics: "复制诊断信息",
         .openLog: "打开日志",
         .showEmails: "显示邮箱",
@@ -278,14 +292,18 @@ private enum AppTextCatalog {
         .chooseAppLanguage: "选择应用语言。",
         .codexCLI: "Codex CLI",
         .diagnostics: "诊断",
+        .about: "关于",
+        .aboutDescription: "在 Mac 菜单栏里查看多个 ChatGPT Codex 账户的用量。",
         .revealLogInFinder: "在访达中显示日志",
         .noDiagnosticsCollected: "还没有诊断信息。",
         .howToAddMoreAccounts: "如何添加更多账户",
-        .howToAddMoreAccountsLine1: "这个应用会先读取当前 Codex 已登录的账户。",
-        .howToAddMoreAccountsLine2: "如果这个账户已经导入过，添加账户会打开 Codex 浏览器登录流程，并把新账户保存到独立存储里。",
+        .howToAddMoreAccountsLine1: "点“导入当前账户”会读取这台 Mac 上当前已登录的 Codex 账户。",
+        .howToAddMoreAccountsLine2: "点“添加账户”会打开 Codex 的浏览器登录流程，并把另一个账户保存到独立存储里。",
         .importedAccounts: "已导入账户",
         .storedAt: "存储位置",
         .logFile: "日志文件",
+        .version: "版本",
+        .github: "GitHub",
         .codexExecutableUnresolved: "还没有解析出 codex 可执行文件",
         .workspaceKindPersonal: "个人",
         .workspaceKindTeam: "团队",

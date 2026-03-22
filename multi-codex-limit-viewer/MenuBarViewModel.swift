@@ -29,6 +29,8 @@ final class MenuBarViewModel: ObservableObject {
     private let logger: DiagnosticsLogStore
     private let codexWindowTitleReader: CodexWindowTitleReader
     private var autoRefreshTask: Task<Void, Never>?
+    private var addAccountTask: Task<Void, Never>?
+    private var addAccountFlowID: UUID?
 
     init(
         store: AuthSnapshotStore? = nil,
@@ -57,6 +59,12 @@ final class MenuBarViewModel: ObservableObject {
 
     deinit {
         autoRefreshTask?.cancel()
+        addAccountTask?.cancel()
+
+        let loginFlow = self.loginFlow
+        Task {
+            await loginFlow.cancelActiveLogin()
+        }
     }
 
     var accounts: [StoredAccount] {
@@ -130,54 +138,73 @@ final class MenuBarViewModel: ObservableObject {
         log("Bootstrap finished.")
     }
 
-    func addAccount() async {
+    func addAccount() {
+        let shouldRestartExistingFlow = isAddingAccount || addAccountTask != nil
+        if shouldRestartExistingFlow {
+            log("Restarting Add Account after an unfinished browser login flow.")
+            addAccountTask?.cancel()
+        }
+
+        transientError = nil
+        isAddingAccount = true
+        let flowID = UUID()
+        addAccountFlowID = flowID
+
+        addAccountTask = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+
+            defer {
+                self.finishAddAccountFlow(flowID)
+            }
+
+            if shouldRestartExistingFlow {
+                await self.loginFlow.cancelActiveLogin()
+
+                do {
+                    try Task.checkCancellation()
+                } catch {
+                    return
+                }
+            }
+
+            do {
+                try await self.addAccountInBrowser()
+            } catch is CancellationError {
+                self.log("Add Account cancelled.")
+            } catch {
+                self.transientError = error.localizedDescription
+                self.log("Add Account failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func importCurrentAccount() async {
         guard !isAddingAccount else {
-            log("Add Account skipped because an add-account flow is already running.")
+            log("Import Current Account skipped because an add-account flow is already running.")
             return
         }
 
+        transientError = nil
         isAddingAccount = true
         defer {
             isAddingAccount = false
         }
 
         do {
-            let currentAccountImport = try importCurrentAccountSync(setActive: false)
-            if currentAccountImport.wasNew {
-                updateState { state in
-                    state.activeAccountID = currentAccountImport.account.id
-                }
-                log("Added current Codex account \(currentAccountImport.account.maskedEmail).")
-                await refreshAll()
-                return
+            let importResult = try importCurrentAccountSync(setActive: true)
+            if importResult.wasNew {
+                log("Imported current Codex account \(importResult.account.maskedEmail).")
+            } else {
+                log(
+                    "Current Codex account \(importResult.account.maskedEmail) is already imported. accountID=\(importResult.account.id) listUnchanged=true"
+                )
             }
-
-            let codexExecutable = try resolver.resolve(log: logger.append)
-            codexExecutablePath = codexExecutable.path
-            log("Using codex executable for Add Account: \(codexExecutable.path)")
-
-            let pendingLoginHomeURL = try store.pendingLoginHomeURL()
-            defer {
-                store.removePendingLoginHome(at: pendingLoginHomeURL)
-            }
-
-            try await loginFlow.login(
-                executableURL: codexExecutable,
-                codexHomeURL: pendingLoginHomeURL,
-                log: logger.append
-            )
-
-            let authURL = pendingLoginHomeURL.appendingPathComponent("auth.json")
-            let importedAccount = try store.importAccount(
-                from: authURL,
-                existingAccounts: state.accounts
-            )
-            let addAccountResult = upsertImportedAccount(importedAccount, setActive: true)
-            log("Added browser account \(addAccountResult.account.maskedEmail).")
             await refreshAll()
         } catch {
             transientError = error.localizedDescription
-            log("Add Account failed: \(error.localizedDescription)")
+            log("Import Current Account failed: \(error.localizedDescription)")
         }
     }
 
@@ -343,7 +370,7 @@ final class MenuBarViewModel: ObservableObject {
                 try store.activateAccount(replacementAccount)
             } catch {
                 transientError = error.localizedDescription
-                log("Delete account failed while switching active account: \(error.localizedDescription)")
+                log("Remove account from app failed while switching active account: \(error.localizedDescription)")
                 return
             }
         }
@@ -352,7 +379,7 @@ final class MenuBarViewModel: ObservableObject {
             try store.removeStoredAccount(account)
         } catch {
             transientError = error.localizedDescription
-            log("Delete account failed while removing stored auth: \(error.localizedDescription)")
+            log("Remove account from app failed while removing stored auth: \(error.localizedDescription)")
             return
         }
 
@@ -368,7 +395,7 @@ final class MenuBarViewModel: ObservableObject {
             }
         }
 
-        log("Deleted account \(account.maskedEmail).")
+        log("Removed account \(account.maskedEmail) from app storage.")
     }
 
     func moveAccount(_ accountID: String, toIndex requestedIndex: Int) {
@@ -637,6 +664,56 @@ final class MenuBarViewModel: ObservableObject {
         try store.saveState(state)
     }
 
+    private func finishAddAccountFlow(_ flowID: UUID) {
+        guard addAccountFlowID == flowID else {
+            return
+        }
+
+        isAddingAccount = false
+        addAccountFlowID = nil
+        addAccountTask = nil
+    }
+
+    private func addAccountInBrowser() async throws {
+        let codexExecutable = try resolver.resolve(log: logger.append)
+        codexExecutablePath = codexExecutable.path
+        log("Using codex executable for Add Account: \(codexExecutable.path)")
+
+        let pendingLoginHomeURL = try store.pendingLoginHomeURL()
+        defer {
+            store.removePendingLoginHome(at: pendingLoginHomeURL)
+        }
+
+        try await loginFlow.login(
+            executableURL: codexExecutable,
+            codexHomeURL: pendingLoginHomeURL,
+            log: { [logger] message in
+                logger.append(message)
+            }
+        )
+
+        let authURL = pendingLoginHomeURL.appendingPathComponent("auth.json")
+        let importedAccount = try store.importAccount(
+            from: authURL,
+            existingAccounts: state.accounts
+        )
+        let alreadyImported = state.accounts.contains(where: { $0.id == importedAccount.id })
+        let addAccountResult = upsertImportedAccount(importedAccount, setActive: !alreadyImported)
+
+        if alreadyImported {
+            log(
+                "Add Account browser login returned an existing account \(addAccountResult.account.maskedEmail). accountID=\(addAccountResult.account.id) listUnchanged=true"
+            )
+            await refreshAll()
+            transientError = addAccountAlreadyImportedMessage(for: addAccountResult.account)
+            refreshDiagnosticsReport()
+            return
+        }
+
+        log("Added browser account \(addAccountResult.account.maskedEmail).")
+        await refreshAll()
+    }
+
     private func upsertImportedAccount(_ importedAccount: StoredAccount, setActive: Bool) -> AccountImportResult {
         let wasNew = !state.accounts.contains(where: { $0.id == importedAccount.id })
 
@@ -835,6 +912,14 @@ final class MenuBarViewModel: ObservableObject {
 
     private func refreshDiagnosticsReport() {
         diagnosticsReport = buildDiagnosticsReport()
+    }
+
+    private func addAccountAlreadyImportedMessage(for account: StoredAccount) -> String {
+        if effectiveLanguage.isChinese {
+            return "浏览器登录回来的还是 \(account.maskedEmail)，它已经在列表里了，所以没有新增条目。想添加别的账号，请先在浏览器里切到那个账号后再登录。"
+        }
+
+        return "The browser signed back into \(account.maskedEmail), which is already in the list, so no new account was added. To add a different account, switch the browser to that account first and sign in again."
     }
 
     private func relativeUpdateText(since date: Date) -> String {

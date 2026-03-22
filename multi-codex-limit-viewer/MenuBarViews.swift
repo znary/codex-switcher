@@ -6,6 +6,8 @@
 import AppKit
 import SwiftUI
 
+private let appTitle = "Codex Switcher"
+
 private enum CapacityDisplayMode: String {
     case remaining
     case used
@@ -112,7 +114,7 @@ struct MenuBarRootView: View {
         MenuSectionCard {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Codex")
+                    Text(appTitle)
                         .font(.system(size: 30, weight: .semibold, design: .rounded))
                         .foregroundStyle(Color.codexInk)
 
@@ -307,15 +309,28 @@ struct MenuBarRootView: View {
         MenuSectionCard {
             FooterButton(icon: "plus", title: viewModel.text(.addAccount)) {
                 dismissMenuBarPanel {
-                    Task {
-                        await viewModel.addAccount()
-                    }
+                    viewModel.addAccount()
+                }
+            }
+
+            FooterButton(icon: "tray.and.arrow.down", title: viewModel.text(.importCurrentAccount)) {
+                Task {
+                    await viewModel.importCurrentAccount()
                 }
             }
 
             FooterButton(icon: "dot.radiowaves.left.and.right", title: viewModel.text(.statusPage)) {
                 dismissMenuBarPanel {
                     guard let url = URL(string: "https://status.openai.com") else {
+                        return
+                    }
+                    NSWorkspace.shared.open(url)
+                }
+            }
+
+            FooterButton(icon: "chart.bar", title: viewModel.text(.usageDashboard)) {
+                dismissMenuBarPanel {
+                    guard let url = URL(string: "https://chatgpt.com/codex/settings/usage") else {
                         return
                     }
                     NSWorkspace.shared.open(url)
@@ -347,7 +362,7 @@ struct MenuBarRootView: View {
 
     private var emptyState: some View {
         MenuSectionCard {
-            Text("Codex")
+            Text(appTitle)
                 .font(.system(size: 30, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.codexInk)
 
@@ -359,33 +374,63 @@ struct MenuBarRootView: View {
                 diagnosticsErrorBlock(error)
             }
 
-            Button {
-                Task {
-                    await viewModel.addAccount()
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .bold))
+            VStack(alignment: .leading, spacing: 10) {
+                Button {
+                    viewModel.addAccount()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .bold))
 
-                    Text(viewModel.text(.addAccount))
-                        .font(.system(size: 14, weight: .semibold))
+                        Text(viewModel.text(.addAccount))
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.codexAccent)
+                    )
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(Color.codexAccent)
-                )
+                .buttonStyle(.plain)
+                .buttonStyle(PrimaryHoverButtonStyle())
+
+                Button {
+                    Task {
+                        await viewModel.importCurrentAccount()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "tray.and.arrow.down")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        Text(viewModel.text(.importCurrentAccount))
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.codexInk)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.codexCardRaised)
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(Color.codexStroke, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .buttonStyle(CapsuleHoverButtonStyle())
             }
-            .buttonStyle(.plain)
-            .buttonStyle(PrimaryHoverButtonStyle())
 
-            Text(viewModel.text(.howToAddMoreAccountsLine2))
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.codexSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(viewModel.text(.howToAddMoreAccountsLine1))
+                Text(viewModel.text(.howToAddMoreAccountsLine2))
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(Color.codexSecondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(24)
     }
@@ -627,6 +672,7 @@ struct StatusBarLabel: View {
 }
 
 struct SettingsView: View {
+    private let githubURL = URL(string: "https://github.com/znary/codex-switcher")!
     @ObservedObject var viewModel: MenuBarViewModel
 
     var body: some View {
@@ -695,49 +741,6 @@ struct SettingsView: View {
                         }
                     }
 
-                    SettingsPanelSection(title: viewModel.text(.accounts)) {
-                        SettingsPanelRow {
-                            Text("\(viewModel.text(.importedAccounts)): \(viewModel.accounts.count)")
-                                .font(.system(size: 18, weight: .semibold, design: .rounded))
-                                .foregroundStyle(Color.codexInk)
-                        }
-
-                        SettingsPanelDivider()
-
-                        SettingsPanelRow {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(viewModel.text(.storedAt))
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(Color.codexSecondary)
-                                    .textCase(.uppercase)
-
-                                Text(viewModel.storagePath)
-                                    .font(.system(size: 14, design: .monospaced))
-                                    .foregroundStyle(Color.codexInk)
-                                    .textSelection(.enabled)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-
-                        SettingsPanelDivider()
-
-                        SettingsPanelRow {
-                            HStack(spacing: 12) {
-                                SettingsActionPill(title: viewModel.text(.addAccount)) {
-                                    Task {
-                                        await viewModel.addAccount()
-                                    }
-                                }
-
-                                SettingsActionPill(title: viewModel.text(.refreshNow)) {
-                                    Task {
-                                        await viewModel.refreshAll()
-                                    }
-                                }
-                            }
-                        }
-                    }
-
                     SettingsPanelSection(title: viewModel.text(.language)) {
                         SettingsPanelRow {
                             VStack(alignment: .leading, spacing: 14) {
@@ -783,23 +786,6 @@ struct SettingsView: View {
 
                     SettingsPanelSection(title: viewModel.text(.diagnostics)) {
                         SettingsPanelRow {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(viewModel.text(.logFile))
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(Color.codexSecondary)
-                                    .textCase(.uppercase)
-
-                                Text(viewModel.diagnosticsLogPath)
-                                    .font(.system(size: 14, design: .monospaced))
-                                    .foregroundStyle(Color.codexInk)
-                                    .textSelection(.enabled)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-
-                        SettingsPanelDivider()
-
-                        SettingsPanelRow {
                             HStack(spacing: 12) {
                                 SettingsActionPill(title: viewModel.text(.copyDiagnostics)) {
                                     viewModel.copyDiagnostics()
@@ -809,25 +795,6 @@ struct SettingsView: View {
                                     viewModel.revealDiagnosticsLog()
                                 }
                             }
-                        }
-
-                        SettingsPanelDivider()
-
-                        SettingsPanelRow {
-                            Text(viewModel.diagnosticsReport.isEmpty ? viewModel.text(.noDiagnosticsCollected) : viewModel.diagnosticsReport)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Color.codexInk)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(14)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .fill(Color.codexCardRaised)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .stroke(Color.codexStroke, lineWidth: 1)
-                                )
                         }
                     }
 
@@ -840,6 +807,30 @@ struct SettingsView: View {
                             }
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(Color.codexInk)
+                        }
+                    }
+
+                    SettingsPanelSection(title: viewModel.text(.about)) {
+                        SettingsPanelRow {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(appDisplayName)
+                                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.codexInk)
+
+                                Text(viewModel.text(.aboutDescription))
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(Color.codexSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+
+                        SettingsPanelDivider()
+
+                        SettingsPanelRow {
+                            VStack(alignment: .leading, spacing: 14) {
+                                settingsInfoRow(title: viewModel.text(.version), value: appVersionLabel)
+                                settingsLinkRow(title: viewModel.text(.github), url: githubURL)
+                            }
                         }
                     }
                 }
@@ -858,6 +849,49 @@ struct SettingsView: View {
             )
         }
         .background(WindowConfigurator(identifier: MenuBarViewModel.settingsWindowIdentifier))
+    }
+
+    private var appDisplayName: String {
+        appTitle
+    }
+
+    private var appVersionLabel: String {
+        let version = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0"
+        let build = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? version
+        return build == version ? version : "\(version) (\(build))"
+    }
+
+    private func settingsInfoRow(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Color.codexSecondary)
+                .textCase(.uppercase)
+
+            Text(value)
+                .font(.system(size: 14, design: .monospaced))
+                .foregroundStyle(Color.codexInk)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func settingsLinkRow(title: String, url: URL) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Color.codexSecondary)
+                .textCase(.uppercase)
+
+            Link(destination: url) {
+                Text(url.absoluteString)
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.blue)
+                    .underline()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
 

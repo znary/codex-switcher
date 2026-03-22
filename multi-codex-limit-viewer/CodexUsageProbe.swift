@@ -5,6 +5,12 @@
 
 import Foundation
 
+private final class ContinuationResumeState: @unchecked Sendable {
+    nonisolated(unsafe) var didResume = false
+
+    nonisolated init() {}
+}
+
 struct CodexExecutableResolver: Sendable {
     nonisolated func resolve(log: ((String) -> Void)? = nil) throws -> URL {
         let environment = ProcessInfo.processInfo.environment
@@ -108,11 +114,13 @@ struct CodexExecutableResolver: Sendable {
     }
 }
 
-struct CodexLoginFlow: Sendable {
-    nonisolated func login(
+actor CodexLoginFlow {
+    private var activeProcess: Process?
+
+    func login(
         executableURL: URL,
         codexHomeURL: URL,
-        log: ((String) -> Void)? = nil
+        log: (@Sendable (String) -> Void)? = nil
     ) async throws {
         let process = Process()
         let stdoutPipe = Pipe()
@@ -124,22 +132,55 @@ struct CodexLoginFlow: Sendable {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        activeProcess = process
         log?("Launching codex login. executable=\(executableURL.path) codexHome=\(codexHomeURL.path)")
 
-        do {
-            let exitStatus = try await withTimeout(seconds: 300) {
-                try await withCheckedThrowingContinuation { continuation in
-                    process.terminationHandler = { finishedProcess in
-                        continuation.resume(returning: finishedProcess.terminationStatus)
-                    }
+        defer {
+            if activeProcess === process {
+                activeProcess = nil
+            }
+        }
 
-                    do {
-                        try process.run()
-                    } catch {
-                        continuation.resume(throwing: error)
+        do {
+            let exitStatus: Int32 = try await withTaskCancellationHandler(operation: {
+                try await withTimeout(seconds: 300) {
+                    try await withCheckedThrowingContinuation { continuation in
+                        let lock = NSLock()
+                        let resumeState = ContinuationResumeState()
+
+                        @Sendable func resume(_ result: Result<Int32, Error>) {
+                            lock.lock()
+                            defer { lock.unlock() }
+
+                            guard !resumeState.didResume else {
+                                return
+                            }
+                            resumeState.didResume = true
+
+                            switch result {
+                            case .success(let status):
+                                continuation.resume(returning: status)
+                            case .failure(let error):
+                                continuation.resume(throwing: error)
+                            }
+                        }
+
+                        process.terminationHandler = { finishedProcess in
+                            resume(.success(finishedProcess.terminationStatus))
+                        }
+
+                        do {
+                            try process.run()
+                        } catch {
+                            resume(.failure(error))
+                        }
                     }
                 }
-            }
+            }, onCancel: {
+                Task {
+                    await self.cancelActiveLogin()
+                }
+            })
 
             let stdout = readPipe(stdoutPipe)
             let stderr = readPipe(stderrPipe)
@@ -161,23 +202,45 @@ struct CodexLoginFlow: Sendable {
             guard FileManager.default.fileExists(atPath: authURL.path) else {
                 throw ProbeError.invalidResponse("codex login finished but no auth.json was created.")
             }
+        } catch is CancellationError {
+            terminateIfRunning(process)
+            throw CancellationError()
         } catch ProbeError.timedOut {
-            if process.isRunning {
-                process.terminate()
-            }
+            terminateIfRunning(process)
             throw ProbeError.loginTimedOut
         } catch {
-            if process.isRunning {
-                process.terminate()
-            }
+            terminateIfRunning(process)
             throw error
         }
+    }
+
+    func cancelActiveLogin() {
+        guard let activeProcess else {
+            return
+        }
+
+        if self.activeProcess === activeProcess {
+            self.activeProcess = nil
+        }
+        terminateIfRunning(activeProcess)
     }
 
     nonisolated private func mergedEnvironment(codexHomeURL: URL) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["CODEX_HOME"] = codexHomeURL.path
         return environment
+    }
+
+    nonisolated private func terminateIfRunning(_ process: Process) {
+        guard process.isRunning else {
+            return
+        }
+
+        process.terminate()
+
+        if process.isRunning {
+            process.interrupt()
+        }
     }
 
     nonisolated private func readPipe(_ pipe: Pipe) -> String {
