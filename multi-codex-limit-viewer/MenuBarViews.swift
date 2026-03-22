@@ -97,8 +97,12 @@ struct MenuBarRootView: View {
                 .background(ScrollChromeTuner())
                 .frame(width: 388, height: 700)
             } else {
-                emptyState
-                    .frame(width: 388, height: 300)
+                ScrollView(showsIndicators: false) {
+                    emptyState
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .background(ScrollChromeTuner())
+                .frame(width: 388, height: viewModel.transientError == nil ? 300 : 420)
             }
         }
         .background(
@@ -365,10 +369,12 @@ struct MenuBarRootView: View {
             Text(appTitle)
                 .font(.system(size: 30, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.codexInk)
+                .fixedSize(horizontal: false, vertical: true)
 
             Text(viewModel.text(.noImportedAccount))
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(Color.codexSecondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             if let error = viewModel.transientError {
                 diagnosticsErrorBlock(error)
@@ -424,13 +430,15 @@ struct MenuBarRootView: View {
                 .buttonStyle(CapsuleHoverButtonStyle())
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(viewModel.text(.howToAddMoreAccountsLine1))
-                Text(viewModel.text(.howToAddMoreAccountsLine2))
+            if viewModel.transientError == nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(viewModel.text(.howToAddMoreAccountsLine1))
+                    Text(viewModel.text(.howToAddMoreAccountsLine2))
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.codexSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(Color.codexSecondary)
-            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(24)
     }
@@ -457,12 +465,24 @@ struct MenuBarRootView: View {
     private func diagnosticsErrorBlock(_ message: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(message)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color.codexDanger)
-                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             diagnosticsActions
         }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.codexCardRaised.opacity(0.78))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.codexDanger.opacity(0.18), lineWidth: 1)
+        )
     }
 
     private var diagnosticsActions: some View {
@@ -485,6 +505,7 @@ struct MenuBarRootView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func meterFillColor(for meter: UsageMeter) -> Color {

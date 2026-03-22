@@ -52,12 +52,20 @@ final class AuthSnapshotStore {
     }
 
     func importCurrentAccount(existingAccounts: [StoredAccount]) throws -> StoredAccount {
-        try importAccount(from: currentAuthURL(), existingAccounts: existingAccounts)
+        try importAccount(
+            from: currentAuthURL(),
+            existingAccounts: existingAccounts,
+            missingFilePathDescription: "~/.codex/auth.json"
+        )
     }
 
-    func importAccount(from authURL: URL, existingAccounts: [StoredAccount]) throws -> StoredAccount {
+    func importAccount(
+        from authURL: URL,
+        existingAccounts: [StoredAccount],
+        missingFilePathDescription: String? = nil
+    ) throws -> StoredAccount {
         guard fileManager.fileExists(atPath: authURL.path) else {
-            throw StoreError.authFileMissing(authURL.path)
+            throw StoreError.authFileMissing(missingFilePathDescription ?? authURL.path)
         }
 
         let data = try Data(contentsOf: authURL)
