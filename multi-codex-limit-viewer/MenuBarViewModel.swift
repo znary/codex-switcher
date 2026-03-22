@@ -207,11 +207,26 @@ final class MenuBarViewModel: ObservableObject {
             log("Using codex executable: \(codexExecutable.path)")
 
             let jobs = state.accounts.flatMap { account in
-                account.workspaces.map { workspace in
+                let homeURL = store.codexHomeURL(for: account)
+
+                if account.workspaces.isEmpty {
+                    let fallbackWorkspaceID = account.selectedWorkspaceID.isEmpty ? account.id : account.selectedWorkspaceID
+                    return [
+                        RefreshJob(
+                            accountID: account.id,
+                            workspaceID: fallbackWorkspaceID,
+                            requestedWorkspaceID: nil,
+                            homeURL: homeURL
+                        )
+                    ]
+                }
+
+                return account.workspaces.map { workspace in
                     RefreshJob(
                         accountID: account.id,
                         workspaceID: workspace.id,
-                        homeURL: store.codexHomeURL(for: account)
+                        requestedWorkspaceID: workspace.id,
+                        homeURL: homeURL
                     )
                 }
             }
@@ -222,12 +237,12 @@ final class MenuBarViewModel: ObservableObject {
             let outcomes = await withTaskGroup(of: RefreshOutcome.self) { group in
                 for job in jobs {
                     group.addTask {
-                        let scope = "account=\(job.accountID) workspace=\(job.workspaceID)"
+                        let scope = "account=\(job.accountID) workspace=\(job.requestedWorkspaceID ?? "default")"
                         do {
                             let result = try await probe.fetchSnapshot(
                                 executableURL: codexExecutable,
                                 codexHomeURL: job.homeURL,
-                                workspaceID: job.workspaceID,
+                                workspaceID: job.requestedWorkspaceID,
                                 log: { message in
                                     logger.append("[\(scope)] \(message)")
                                 }
@@ -928,6 +943,7 @@ struct CodexWindowTitleReader: Sendable {
 private struct RefreshJob: Sendable {
     let accountID: String
     let workspaceID: String
+    let requestedWorkspaceID: String?
     let homeURL: URL
 }
 

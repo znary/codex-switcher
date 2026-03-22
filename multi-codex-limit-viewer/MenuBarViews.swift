@@ -176,6 +176,7 @@ struct MenuBarRootView: View {
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(Color.codexSecondary)
                         }
+                        .padding(.top, -3)
                     }
 
                     UsageBar(
@@ -246,6 +247,12 @@ struct MenuBarRootView: View {
             planTitle: viewModel.localizedPlanTitle(for: account.plan),
             meterSummaryLabel: { meter in
                 viewModel.meterSummaryLabel(for: meter)
+            },
+            meterResetLabel: { meter in
+                guard let resetsAt = meter.resetsAt else {
+                    return nil
+                }
+                return viewModel.resetsInText(until: resetsAt)
             }
         ) {
             guard isInteractive,
@@ -1021,6 +1028,7 @@ private struct AccountListRow: View {
     let currentBadgeTitle: String
     let planTitle: String
     let meterSummaryLabel: (UsageMeter) -> String
+    let meterResetLabel: (UsageMeter) -> String?
     let onTap: () -> Void
 
     var body: some View {
@@ -1118,25 +1126,35 @@ private struct AccountListRow: View {
     }
 
     private func meterSummary(_ meter: UsageMeter) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(meterSummaryLabel(meter))
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(Color.codexSecondary)
-                .textCase(.uppercase)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .top, spacing: 8) {
+                Text(meterSummaryLabel(meter))
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Color.codexSecondary)
+                    .textCase(.uppercase)
 
-            HStack(spacing: 8) {
-                UsageBar(
-                    progress: displayMode.progress(for: meter),
-                    height: 8,
-                    fill: meterFillColor(for: meter),
-                    track: Color.codexTrack
-                )
-                .frame(maxWidth: .infinity)
+                Spacer(minLength: 0)
 
                 Text("\(displayMode.percent(for: meter))%")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.codexSecondary)
-                    .frame(width: 36, alignment: .trailing)
+                    .frame(alignment: .trailing)
+                    .padding(.top, -1)
+            }
+
+            UsageBar(
+                progress: displayMode.progress(for: meter),
+                height: 8,
+                fill: meterFillColor(for: meter),
+                track: Color.codexTrack
+            )
+            .frame(maxWidth: .infinity)
+
+            if let resetLabel = meterResetLabel(meter) {
+                Text(resetLabel)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.codexSecondary)
+                    .lineLimit(1)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
