@@ -27,13 +27,20 @@ Codex Switcher 是一个 macOS 菜单栏小工具，用来同时查看多个 Cha
 - 已安装 `codex` 可执行文件，或安装 Codex 桌面版
 - 至少有一个可用的 Codex 登录账号
 
+### 安装方式
+
+1. 打开 [GitHub Releases](https://github.com/znary/codex-switcher/releases) 页面。
+2. 下载最新版本里的 `Codex-Switcher.dmg`。
+3. 双击打开 `Codex-Switcher.dmg`。
+4. 在弹出的安装窗口里，把 `Codex Switcher.app` 拖到 `Applications` 文件夹。
+5. 从 `Applications` 打开 `Codex Switcher`。
+
 ### 使用方式
 
-1. 用 Xcode 打开 [multi-codex-limit-viewer.xcodeproj](./multi-codex-limit-viewer.xcodeproj)。
-2. 构建并运行应用。
-3. 第一次启动时，应用会先尝试导入当前 `~/.codex/auth.json` 对应的账号。
-4. 点击 `Add Account` 可以拉起新的登录流程，把更多账号保存到独立存储里。
-5. 菜单栏面板会显示每个账号的套餐、容量窗口和重置时间。
+1. 如果你是开发者，也可以用 Xcode 打开 [multi-codex-limit-viewer.xcodeproj](./multi-codex-limit-viewer.xcodeproj) 自行构建运行。
+2. 第一次启动时，应用会先尝试导入当前 `~/.codex/auth.json` 对应的账号。
+3. 点击 `Add Account` 可以拉起新的登录流程，把更多账号保存到独立存储里。
+4. 菜单栏面板会显示每个账号的套餐、容量窗口和重置时间。
 
 ### 数据与隐私
 
@@ -70,13 +77,20 @@ Codex Switcher is a macOS menu bar app for monitoring multiple ChatGPT Codex acc
 - A working `codex` executable or the Codex desktop app
 - At least one valid Codex account
 
+### Installation
+
+1. Open the [GitHub Releases](https://github.com/znary/codex-switcher/releases) page.
+2. Download `Codex-Switcher.dmg` from the latest release.
+3. Double-click `Codex-Switcher.dmg` to open it.
+4. In the installer window, drag `Codex Switcher.app` into the `Applications` folder.
+5. Launch `Codex Switcher` from `Applications`.
+
 ### Getting Started
 
-1. Open [multi-codex-limit-viewer.xcodeproj](./multi-codex-limit-viewer.xcodeproj) in Xcode.
-2. Build and run the app.
-3. On first launch, the app tries to import the account from `~/.codex/auth.json`.
-4. Use `Add Account` to launch a new login flow and store more accounts independently.
-5. The menu bar panel shows each account's plan, capacity windows, and reset time.
+1. Developers can also open [multi-codex-limit-viewer.xcodeproj](./multi-codex-limit-viewer.xcodeproj) in Xcode and build the app locally.
+2. On first launch, the app tries to import the account from `~/.codex/auth.json`.
+3. Use `Add Account` to launch a new login flow and store more accounts independently.
+4. The menu bar panel shows each account's plan, capacity windows, and reset time.
 
 ### Data and Privacy
 

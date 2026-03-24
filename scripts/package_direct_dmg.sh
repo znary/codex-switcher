@@ -10,6 +10,7 @@ TEAM_ID="${TEAM_ID:-24D7733HKN}"
 APP_NAME="${APP_NAME:-Codex Switcher}"
 DISPLAY_NAME="${DISPLAY_NAME:-Codex Switcher}"
 BUILD_ROOT="${BUILD_ROOT:-$ROOT_DIR/build/direct}"
+DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$BUILD_ROOT/DerivedData}"
 ARCHIVE_PATH="$BUILD_ROOT/$DISPLAY_NAME.xcarchive"
 EXPORT_PATH="$BUILD_ROOT/export"
 DMG_ROOT="$BUILD_ROOT/dmg-root"
@@ -73,6 +74,7 @@ xcodebuild archive \
   -project "$PROJECT_PATH" \
   -scheme "$SCHEME" \
   -configuration "$CONFIGURATION" \
+  -derivedDataPath "$DERIVED_DATA_PATH" \
   -archivePath "$ARCHIVE_PATH"
 
 echo "==> Exporting Developer ID app"
@@ -91,7 +93,8 @@ resolve_dmg_sign_identity
 
 echo "==> Verifying exported app signature"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-spctl -a -vv -t exec "$APP_PATH"
+# A Developer ID app exported here has not been notarized yet, so Gatekeeper
+# will reject it until the final distribution container is notarized.
 
 echo "==> Creating DMG staging folder"
 rm -rf "$DMG_ROOT"
@@ -133,7 +136,14 @@ EOF
 fi
 
 echo "==> Verifying DMG"
-spctl -a -vv -t open "$DMG_PATH"
+if spctl -a -vv -t open "$DMG_PATH"; then
+  :
+elif [[ -n "$NOTARY_PROFILE" ]]; then
+  echo "Gatekeeper verification failed for notarized DMG." >&2
+  exit 1
+else
+  echo "Gatekeeper rejected the DMG because notarization was skipped." >&2
+fi
 
 cat <<EOF
 
