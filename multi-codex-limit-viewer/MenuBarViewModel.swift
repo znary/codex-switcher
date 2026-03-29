@@ -21,8 +21,9 @@ final class MenuBarViewModel: ObservableObject {
     @Published private(set) var codexExecutablePath: String?
     @Published private(set) var diagnosticsReport = ""
     @Published private(set) var launchAtLoginEnabled = false
+    @Published private(set) var cloudSyncStatus: CloudSyncStatus
 
-    private let store: AuthSnapshotStore
+    private var store: AuthSnapshotStore
     private let probe: CodexUsageProbe
     private let loginFlow: CodexLoginFlow
     private let resolver: CodexExecutableResolver
@@ -46,13 +47,16 @@ final class MenuBarViewModel: ObservableObject {
         self.probe = probe ?? CodexUsageProbe()
         self.loginFlow = loginFlow ?? CodexLoginFlow()
         self.resolver = resolver ?? CodexExecutableResolver()
-        self.logger = logger ?? DiagnosticsLogStore(rootURL: self.store.rootURL)
+        self.logger = logger ?? DiagnosticsLogStore(rootURL: self.store.localRootURL)
         self.codexWindowTitleReader = codexWindowTitleReader ?? CodexWindowTitleReader()
         state = (try? self.store.loadState()) ?? .empty
         runtimeStates = [:]
+        cloudSyncStatus = self.store.cloudSyncStatus()
         applyAppearance()
         syncLaunchAtLoginStatus()
-        self.logger.append("App launched. storage=\(self.store.rootURL.path)")
+        self.logger.append(
+            "App launched. storage=\(self.store.rootURL.path) iCloud=\(self.store.iCloudRootURL?.path ?? "unavailable")"
+        )
         observeWorkspacePowerEvents()
         refreshDiagnosticsReport()
 
@@ -111,6 +115,130 @@ final class MenuBarViewModel: ObservableObject {
 
     var diagnosticsLogPath: String {
         logger.logURL.path
+    }
+
+    var cloudStoragePath: String {
+        cloudSyncStatus.iCloudStoragePath ?? unavailableValue()
+    }
+
+    var cloudSyncStatusTitle: String {
+        switch cloudSyncStatus.phase {
+        case .synced:
+            return effectiveLanguage.isChinese ? "已一致" : "Matched"
+        case .syncing:
+            return effectiveLanguage.isChinese ? "同步中" : "Syncing"
+        case .different:
+            if localLooksNewerThanCloud {
+                return effectiveLanguage.isChinese ? "本地有新内容" : "Local Changed"
+            }
+            if cloudLooksNewerThanLocal {
+                return effectiveLanguage.isChinese ? "iCloud 有新内容" : "iCloud Changed"
+            }
+            return effectiveLanguage.isChinese ? "有差异" : "Different"
+        case .localOnly:
+            return effectiveLanguage.isChinese ? "只有本地" : "Local Only"
+        case .iCloudOnly:
+            return effectiveLanguage.isChinese ? "只有 iCloud" : "iCloud Only"
+        case .unavailable:
+            return effectiveLanguage.isChinese ? "不可用" : "Unavailable"
+        case .empty:
+            return effectiveLanguage.isChinese ? "暂无数据" : "No Data"
+        }
+    }
+
+    var cloudSyncLastSyncText: String {
+        guard let date = cloudSyncStatus.lastConfirmedSyncAt else {
+            return effectiveLanguage.isChinese ? "还没有同步记录" : "No sync record yet"
+        }
+
+        let timestamp = formattedTimestamp(date)
+        let relative = relativeUpdateText(since: date)
+        if effectiveLanguage.isChinese {
+            return "\(timestamp)（\(relative)）"
+        }
+        return "\(timestamp) (\(relative))"
+    }
+
+    var cloudSyncTrackedFilesText: String {
+        "\(cloudSyncStatus.syncedItemCount)/\(cloudSyncStatus.trackedItemCount)"
+    }
+
+    var cloudSyncSummaryText: String {
+        switch cloudSyncStatus.phase {
+        case .synced:
+            if effectiveLanguage.isChinese {
+                return "本地和 iCloud 当前一致。"
+            }
+            return "Local and iCloud match right now."
+        case .syncing:
+            if effectiveLanguage.isChinese {
+                return "iCloud 还在传文件，状态可能会晚一点更新。"
+            }
+            return "iCloud is still transferring files, so the status may update a bit later."
+        case .different:
+            if effectiveLanguage.isChinese {
+                if localLooksNewerThanCloud {
+                    return "这通常是这台 Mac 更新了本地数据，但你还没有把它手动写回 iCloud。只用一台设备时，也会出现这种情况。"
+                }
+                if cloudLooksNewerThanLocal {
+                    return "iCloud 里有比本地更新的内容。本地已有数据，所以应用不会自动覆盖，请手动选择是否拉下来。"
+                }
+                return "本地和 iCloud 内容不一样。因为本地已经有数据，应用不会自动覆盖，请手动选同步方向。"
+            }
+            if localLooksNewerThanCloud {
+                return "This usually means this Mac updated local data, but you have not pushed it back to iCloud yet. This can happen even when you only use one Mac."
+            }
+            if cloudLooksNewerThanLocal {
+                return "iCloud has newer content than the local copy. Because local data already exists, the app will not overwrite it automatically. Pull it down manually if you want it."
+            }
+            return "Local and iCloud differ. Because local data already exists, the app will not overwrite it automatically. Pick a sync direction manually."
+        case .localOnly:
+            if effectiveLanguage.isChinese {
+                return "当前只有本地有这批数据。需要时可以手动上传到 iCloud。"
+            }
+            return "Only the local copy exists right now. Upload to iCloud manually if you need it there."
+        case .iCloudOnly:
+            if effectiveLanguage.isChinese {
+                return "当前只有 iCloud 有这批数据。本地缺文件时会自动补齐。"
+            }
+            return "Only the iCloud copy exists right now. Missing local files can be filled from iCloud automatically."
+        case .unavailable:
+            if effectiveLanguage.isChinese {
+                return "这台 Mac 现在访问不到 iCloud Drive。"
+            }
+            return "This Mac cannot reach iCloud Drive right now."
+        case .empty:
+            if effectiveLanguage.isChinese {
+                return "本地和 iCloud 还没有可同步的数据。"
+            }
+            return "Neither local storage nor iCloud has syncable data yet."
+        }
+    }
+
+    var cloudSyncPolicyHintText: String {
+        if effectiveLanguage.isChinese {
+            return "所有持久化文件都按同一条规则处理：本地已有文件时不会自动覆盖，只在本地缺文件时从 iCloud 补齐。要改另一侧的数据，请手动选择覆盖方向。"
+        }
+        return "All persistent files follow the same rule: existing local files are never overwritten automatically, and iCloud only fills files that are missing locally. Use the manual overwrite buttons when you want to change the other side."
+    }
+
+    var canOverwriteLocalFromICloud: Bool {
+        cloudSyncStatus.isICloudAvailable
+            && !isRefreshing
+            && !isAddingAccount
+    }
+
+    var canOverwriteICloudFromLocal: Bool {
+        cloudSyncStatus.isICloudAvailable
+            && !isRefreshing
+            && !isAddingAccount
+    }
+
+    var canDeleteICloudStorage: Bool {
+        cloudSyncStatus.isICloudAvailable
+            && cloudSyncStatus.cloudItemCount > 0
+            && !isRefreshing
+            && !isAddingAccount
     }
 
     var languagePreference: AppLanguage {
@@ -258,6 +386,10 @@ final class MenuBarViewModel: ObservableObject {
             codexExecutablePath = codexExecutable.path
             log("Using codex executable: \(codexExecutable.path)")
 
+            for account in state.accounts {
+                store.prepareStoredAccountForUse(account)
+            }
+
             let jobs = state.accounts.flatMap { account in
                 let homeURL = store.codexHomeURL(for: account)
 
@@ -324,7 +456,12 @@ final class MenuBarViewModel: ObservableObject {
 
             apply(outcomes: outcomes)
             applyVisibleCodexWorkspaceTitleIfAvailable()
-            try saveState()
+            do {
+                try saveState()
+            } catch {
+                transientError = error.localizedDescription
+                log("Saving refreshed local state failed: \(error.localizedDescription)")
+            }
             let failureCount = outcomes.filter {
                 if case .failure = $0.result {
                     return true
@@ -752,6 +889,86 @@ final class MenuBarViewModel: ObservableObject {
         }
     }
 
+    func refreshCloudSyncStatus() {
+        cloudSyncStatus = store.cloudSyncStatus()
+        refreshDiagnosticsReport()
+    }
+
+    func overwriteLocalDataFromICloud() {
+        guard canOverwriteLocalFromICloud else {
+            transientError = cloudSyncActionUnavailableMessage()
+            return
+        }
+
+        guard confirmOverwriteLocalFromICloud() else {
+            return
+        }
+
+        transientError = nil
+
+        do {
+            try store.overwriteLocalDataFromICloud()
+            rebuildStoreState()
+            runtimeStates = [:]
+            syncActiveAccountToCodexHomeIfNeeded()
+            log("Replaced local persistent data with the current iCloud copy.")
+
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    return
+                }
+                await self.refreshAll()
+            }
+        } catch {
+            transientError = error.localizedDescription
+            log("Replacing local data from iCloud failed: \(error.localizedDescription)")
+        }
+    }
+
+    func overwriteICloudDataFromLocal() {
+        guard canOverwriteICloudFromLocal else {
+            transientError = cloudSyncActionUnavailableMessage()
+            return
+        }
+
+        guard confirmOverwriteICloudFromLocal() else {
+            return
+        }
+
+        transientError = nil
+
+        do {
+            try store.overwriteICloudDataFromLocal()
+            refreshCloudSyncStatus()
+            log("Replaced the current iCloud copy with local persistent data.")
+        } catch {
+            transientError = error.localizedDescription
+            log("Replacing iCloud data from local failed: \(error.localizedDescription)")
+        }
+    }
+
+    func deleteICloudStorage() {
+        guard canDeleteICloudStorage else {
+            transientError = cloudSyncActionUnavailableMessage()
+            return
+        }
+
+        guard confirmDeleteICloudStorage() else {
+            return
+        }
+
+        transientError = nil
+
+        do {
+            try store.deleteICloudStorage()
+            refreshCloudSyncStatus()
+            log("Deleted the current iCloud persistent data.")
+        } catch {
+            transientError = error.localizedDescription
+            log("Deleting iCloud data failed: \(error.localizedDescription)")
+        }
+    }
+
     func openSettingsWindow() {
         log("Opening settings window.")
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -962,6 +1179,7 @@ final class MenuBarViewModel: ObservableObject {
 
     private func saveState() throws {
         try store.saveState(state)
+        refreshCloudSyncStatus()
     }
 
     private func finishAddAccountFlow(_ flowID: UUID) {
@@ -1487,6 +1705,12 @@ final class MenuBarViewModel: ObservableObject {
     private func buildDiagnosticsReport() -> String {
         var lines: [String] = [
             "Storage: \(storagePath)",
+            "iCloud storage: \(cloudSyncStatus.iCloudStoragePath ?? "unavailable")",
+            "Cloud sync: \(cloudSyncStatus.phase.rawValue)",
+            "Cloud sync items: \(cloudSyncStatus.syncedItemCount)/\(cloudSyncStatus.trackedItemCount)",
+            "Local items: \(cloudSyncStatus.localItemCount)",
+            "Cloud items: \(cloudSyncStatus.cloudItemCount)",
+            "Cloud sync last action: \(cloudSyncStatus.lastConfirmedSyncAt?.description ?? "none")",
             "Log file: \(diagnosticsLogPath)",
             "Codex executable: \(codexExecutablePath ?? "unresolved")",
             "Imported accounts: \(state.accounts.count)",
@@ -1513,6 +1737,140 @@ final class MenuBarViewModel: ObservableObject {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    private func rebuildStoreState() {
+        store = AuthSnapshotStore()
+        state = (try? store.loadState()) ?? .empty
+        cloudSyncStatus = store.cloudSyncStatus()
+        refreshDiagnosticsReport()
+    }
+
+    private func formattedTimestamp(_ date: Date) -> String {
+        DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .short)
+    }
+
+    private func unavailableValue() -> String {
+        effectiveLanguage.isChinese ? "不可用" : "Unavailable"
+    }
+
+    private var localLooksNewerThanCloud: Bool {
+        guard cloudSyncStatus.phase == .different else {
+            return false
+        }
+        guard let lastLocalChangeAt = cloudSyncStatus.lastLocalChangeAt else {
+            return false
+        }
+        let lastCloudChangeAt = cloudSyncStatus.lastCloudChangeAt ?? .distantPast
+        return lastLocalChangeAt > lastCloudChangeAt
+    }
+
+    private var cloudLooksNewerThanLocal: Bool {
+        guard cloudSyncStatus.phase == .different else {
+            return false
+        }
+        guard let lastCloudChangeAt = cloudSyncStatus.lastCloudChangeAt else {
+            return false
+        }
+        let lastLocalChangeAt = cloudSyncStatus.lastLocalChangeAt ?? .distantPast
+        return lastCloudChangeAt > lastLocalChangeAt
+    }
+
+    private func cloudSyncActionUnavailableMessage() -> String {
+        if isRefreshing || isAddingAccount {
+            if effectiveLanguage.isChinese {
+                return "请等当前刷新或登录流程结束后再操作 iCloud 同步。"
+            }
+            return "Wait for the current refresh or login flow to finish before changing iCloud sync."
+        }
+
+        if effectiveLanguage.isChinese {
+            return "这台 Mac 现在不能操作 iCloud 同步。"
+        }
+        return "iCloud sync cannot be changed on this Mac right now."
+    }
+
+    private func syncActiveAccountToCodexHomeIfNeeded() {
+        guard let activeAccount else {
+            return
+        }
+
+        do {
+            try store.activateAccount(activeAccount)
+        } catch {
+            transientError = error.localizedDescription
+            log("Activating the current account after reloading local storage failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func confirmOverwriteLocalFromICloud() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        if effectiveLanguage.isChinese {
+            alert.messageText = "用 iCloud 覆盖本地"
+            if cloudSyncStatus.cloudItemCount == 0 {
+                alert.informativeText = "iCloud 里现在没有这批存储数据。继续后，本地的 app-state 和账号 auth 快照会被清空。"
+            } else {
+                alert.informativeText = "会用 iCloud 里的 app-state 和账号 auth 快照覆盖本地同名数据，本地已有内容不会保留。"
+            }
+            alert.addButton(withTitle: "覆盖本地")
+        } else {
+            alert.messageText = "Overwrite Local with iCloud"
+            if cloudSyncStatus.cloudItemCount == 0 {
+                alert.informativeText = "iCloud does not currently have this set of stored data. Continuing will clear the local app-state and stored auth snapshots."
+            } else {
+                alert.informativeText = "This overwrites the local app-state and stored auth snapshots with the current iCloud copy. Existing local content will not be kept."
+            }
+            alert.addButton(withTitle: "Overwrite Local")
+        }
+        alert.addButton(withTitle: cancelButtonTitle())
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmOverwriteICloudFromLocal() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        if effectiveLanguage.isChinese {
+            alert.messageText = "用本地覆盖 iCloud"
+            if cloudSyncStatus.localItemCount == 0 {
+                alert.informativeText = "本地现在没有这批存储数据。继续后，iCloud 里的 app-state 和账号 auth 快照会被清空。"
+            } else {
+                alert.informativeText = "会用本地的 app-state 和账号 auth 快照覆盖 iCloud 同名数据，云端已有内容不会保留。"
+            }
+            alert.addButton(withTitle: "覆盖 iCloud")
+        } else {
+            alert.messageText = "Overwrite iCloud with Local"
+            if cloudSyncStatus.localItemCount == 0 {
+                alert.informativeText = "Local storage does not currently have this set of stored data. Continuing will clear the iCloud app-state and stored auth snapshots."
+            } else {
+                alert.informativeText = "This overwrites the iCloud app-state and stored auth snapshots with the current local copy. Existing iCloud content will not be kept."
+            }
+            alert.addButton(withTitle: "Overwrite iCloud")
+        }
+        alert.addButton(withTitle: cancelButtonTitle())
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmDeleteICloudStorage() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        if effectiveLanguage.isChinese {
+            alert.messageText = "删除 iCloud 数据"
+            alert.informativeText = "会删掉 iCloud 里的 app-state 和账号 auth 快照。本机数据不会受影响，应用仍然继续用本地数据。"
+            alert.addButton(withTitle: "删除")
+        } else {
+            alert.messageText = "Delete iCloud Data"
+            alert.informativeText = "This removes the app-state and stored auth snapshots from iCloud. Local data stays unchanged and the app continues using the local copy."
+            alert.addButton(withTitle: "Delete")
+        }
+        alert.addButton(withTitle: cancelButtonTitle())
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func launchAtLoginErrorMessage(for error: Error) -> String {

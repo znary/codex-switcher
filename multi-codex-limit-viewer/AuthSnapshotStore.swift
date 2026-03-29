@@ -5,39 +5,64 @@
 
 import Foundation
 
+struct CloudSyncStatus: Sendable {
+    enum Phase: String, Sendable {
+        case synced
+        case syncing
+        case different
+        case localOnly
+        case iCloudOnly
+        case unavailable
+        case empty
+    }
+
+    var phase: Phase
+    var localStoragePath: String
+    var iCloudStoragePath: String?
+    var isICloudAvailable: Bool
+    var trackedItemCount: Int
+    var syncedItemCount: Int
+    var localItemCount: Int
+    var cloudItemCount: Int
+    var lastConfirmedSyncAt: Date?
+    var lastLocalChangeAt: Date?
+    var lastCloudChangeAt: Date?
+}
+
 final class AuthSnapshotStore {
     private let fileManager = FileManager.default
 
     let rootURL: URL
+    let localRootURL: URL
+    let iCloudRootURL: URL?
     private let stateURL: URL
     private let accountsDirectoryURL: URL
     private let pendingLoginsDirectoryURL: URL
+    private let localSettingsURL: URL
 
     init(rootURL: URL? = nil) {
-        let baseURL = rootURL ?? Self.defaultRootURL()
-        self.rootURL = baseURL
-        stateURL = baseURL.appendingPathComponent("app-state.json")
-        accountsDirectoryURL = baseURL.appendingPathComponent("accounts", isDirectory: true)
-        pendingLoginsDirectoryURL = baseURL.appendingPathComponent("pending-logins", isDirectory: true)
+        let localRootURL = rootURL ?? Self.localRootURL()
+        self.localRootURL = localRootURL
+        self.rootURL = localRootURL
+        localSettingsURL = localRootURL.appendingPathComponent("sync-settings.json")
+        iCloudRootURL = rootURL == nil ? Self.iCloudRootURL() : nil
+        stateURL = localRootURL.appendingPathComponent("app-state.json")
+        accountsDirectoryURL = localRootURL.appendingPathComponent("accounts", isDirectory: true)
+        pendingLoginsDirectoryURL = localRootURL.appendingPathComponent("pending-logins", isDirectory: true)
 
-        try? fileManager.createDirectory(
-            at: accountsDirectoryURL,
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
-        try? fileManager.createDirectory(
-            at: pendingLoginsDirectoryURL,
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
+        prepareDirectoriesIfNeeded()
+        syncMissingLocalDataFromICloudIfNeeded()
+        prepareDirectoriesIfNeeded()
     }
 
     func loadState() throws -> PersistedAppState {
+        syncMissingLocalStateFromICloudIfNeeded()
+
         guard fileManager.fileExists(atPath: stateURL.path) else {
             return .empty
         }
 
-        let data = try Data(contentsOf: stateURL)
+        let data = try readData(at: stateURL)
         return try JSONDecoder.codexMonitor.decode(PersistedAppState.self, from: data)
     }
 
@@ -48,7 +73,7 @@ final class AuthSnapshotStore {
             withIntermediateDirectories: true,
             attributes: nil
         )
-        try data.write(to: stateURL, options: .atomic)
+        try writeFile(data: data, to: stateURL)
     }
 
     func importCurrentAccount(existingAccounts: [StoredAccount]) throws -> StoredAccount {
@@ -68,7 +93,7 @@ final class AuthSnapshotStore {
             throw StoreError.authFileMissing(missingFilePathDescription ?? authURL.path)
         }
 
-        let data = try Data(contentsOf: authURL)
+        let data = try readData(at: authURL)
         let authFile = try JSONDecoder().decode(ChatGPTAuthFile.self, from: data)
         let claims = try decodeClaims(from: authFile.tokens.idToken)
         let authClaims = claims.openAIAuth
@@ -144,6 +169,10 @@ final class AuthSnapshotStore {
         try? fileManager.removeItem(at: url)
     }
 
+    func prepareStoredAccountForUse(_ account: StoredAccount) {
+        syncMissingLocalAuthFromICloudIfNeeded(accountHomeFolderName: account.authHomeFolderName)
+    }
+
     func removeStoredAccount(_ account: StoredAccount) throws {
         let accountDirectoryURL = codexHomeURL(for: account)
         guard fileManager.fileExists(atPath: accountDirectoryURL.path) else {
@@ -154,12 +183,14 @@ final class AuthSnapshotStore {
     }
 
     func activateAccount(_ account: StoredAccount) throws {
+        syncMissingLocalAuthFromICloudIfNeeded(accountHomeFolderName: account.authHomeFolderName)
+
         let sourceURL = storedAuthURL(for: account)
         guard fileManager.fileExists(atPath: sourceURL.path) else {
             throw StoreError.authFileMissing(sourceURL.path)
         }
 
-        let data = try Data(contentsOf: sourceURL)
+        let data = try readData(at: sourceURL)
         let codexHomeURL = currentCodexHomeURL()
         try fileManager.createDirectory(
             at: codexHomeURL,
@@ -169,7 +200,113 @@ final class AuthSnapshotStore {
         try copyAuthFile(data: data, to: currentAuthURL())
     }
 
+    func currentAccountID() throws -> String? {
+        guard fileManager.fileExists(atPath: currentAuthURL().path) else {
+            return nil
+        }
+
+        let data = try readData(at: currentAuthURL())
+        let authFile = try JSONDecoder().decode(ChatGPTAuthFile.self, from: data)
+        if let accountID = authFile.tokens.accountID {
+            return accountID
+        }
+
+        let claims = try decodeClaims(from: authFile.tokens.idToken)
+        return claims.openAIAuth.chatgptAccountID
+    }
+
+    func cloudSyncStatus() -> CloudSyncStatus {
+        let localSettings = loadLocalSettings()
+        let trackedItems = trackedSyncItems()
+        let syncedItemCount = trackedItems.filter(\.isMatched).count
+        let localItemCount = trackedItems.filter(\.localExists).count
+        let cloudItemCount = trackedItems.filter(\.cloudExists).count
+        let hasPendingCloudTransfers = trackedItems.contains { $0.cloudExists && !$0.isCloudCurrent }
+        let lastLocalChangeAt = trackedItems.compactMap(\.localModificationDate).max()
+        let lastCloudChangeAt = trackedItems.compactMap(\.cloudModificationDate).max()
+
+        let phase: CloudSyncStatus.Phase
+        if iCloudRootURL == nil {
+            phase = .unavailable
+        } else if trackedItems.isEmpty {
+            phase = .empty
+        } else if hasPendingCloudTransfers {
+            phase = .syncing
+        } else if syncedItemCount == trackedItems.count {
+            phase = .synced
+        } else if cloudItemCount == 0 {
+            phase = .localOnly
+        } else if localItemCount == 0 {
+            phase = .iCloudOnly
+        } else {
+            phase = .different
+        }
+
+        return CloudSyncStatus(
+            phase: phase,
+            localStoragePath: localRootURL.path,
+            iCloudStoragePath: iCloudRootURL?.path,
+            isICloudAvailable: iCloudRootURL != nil,
+            trackedItemCount: trackedItems.count,
+            syncedItemCount: syncedItemCount,
+            localItemCount: localItemCount,
+            cloudItemCount: cloudItemCount,
+            lastConfirmedSyncAt: localSettings.lastConfirmedSyncAt,
+            lastLocalChangeAt: lastLocalChangeAt,
+            lastCloudChangeAt: lastCloudChangeAt
+        )
+    }
+
+    func overwriteLocalDataFromICloud() throws {
+        guard let iCloudRootURL else {
+            throw StoreError.iCloudUnavailable
+        }
+
+        try replacePersistentSnapshot(
+            sourceRootURL: iCloudRootURL,
+            destinationRootURL: localRootURL
+        )
+        try markSyncCompleted()
+    }
+
+    func overwriteICloudDataFromLocal() throws {
+        guard let iCloudRootURL else {
+            throw StoreError.iCloudUnavailable
+        }
+
+        try replacePersistentSnapshot(
+            sourceRootURL: localRootURL,
+            destinationRootURL: iCloudRootURL
+        )
+        try markSyncCompleted()
+    }
+
+    func deleteICloudStorage() throws {
+        guard let iCloudRootURL else {
+            throw StoreError.iCloudUnavailable
+        }
+
+        let cloudStateURL = iCloudRootURL.appendingPathComponent("app-state.json")
+        let cloudAccountsDirectoryURL = iCloudRootURL.appendingPathComponent("accounts", isDirectory: true)
+
+        if fileManager.fileExists(atPath: cloudStateURL.path) {
+            try fileManager.removeItem(at: cloudStateURL)
+        }
+
+        if fileManager.fileExists(atPath: cloudAccountsDirectoryURL.path) {
+            try fileManager.removeItem(at: cloudAccountsDirectoryURL)
+        }
+
+        var localSettings = loadLocalSettings()
+        localSettings.lastConfirmedSyncAt = nil
+        try saveLocalSettings(localSettings)
+    }
+
     private func copyAuthFile(data: Data, to destinationURL: URL) throws {
+        try writeFile(data: data, to: destinationURL)
+    }
+
+    private func writeFile(data: Data, to destinationURL: URL) throws {
         if fileManager.fileExists(atPath: destinationURL.path) {
             try fileManager.removeItem(at: destinationURL)
         }
@@ -177,9 +314,303 @@ final class AuthSnapshotStore {
         try data.write(to: destinationURL, options: .atomic)
     }
 
+    private func readData(at url: URL) throws -> Data {
+        ensureUbiquitousDownloadStarted(at: url)
+        return try Data(contentsOf: url)
+    }
+
+    private func ensureUbiquitousDownloadStarted(at url: URL) {
+        guard let iCloudRootURL else {
+            return
+        }
+        guard url.path.hasPrefix(iCloudRootURL.path) else {
+            return
+        }
+        guard fileManager.fileExists(atPath: url.path) else {
+            return
+        }
+
+        let resourceValues = try? url.resourceValues(forKeys: [
+            .isUbiquitousItemKey,
+            .ubiquitousItemDownloadingStatusKey
+        ])
+        guard resourceValues?.isUbiquitousItem == true else {
+            return
+        }
+
+        if resourceValues?.ubiquitousItemDownloadingStatus != URLUbiquitousItemDownloadingStatus.current {
+            try? fileManager.startDownloadingUbiquitousItem(at: url)
+        }
+    }
+
     private func currentCodexHomeURL() -> URL {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".codex", isDirectory: true)
+    }
+
+    private func prepareDirectoriesIfNeeded() {
+        try? fileManager.createDirectory(
+            at: rootURL,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        try? fileManager.createDirectory(
+            at: accountsDirectoryURL,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        try? fileManager.createDirectory(
+            at: pendingLoginsDirectoryURL,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+    }
+
+    private func syncMissingLocalDataFromICloudIfNeeded() {
+        let didCopyState = syncMissingLocalStateFromICloudIfNeeded()
+        let didCopyAccounts = syncMissingLocalAccountsFromICloudIfNeeded()
+        if didCopyState || didCopyAccounts {
+            try? markSyncCompleted()
+        }
+    }
+
+    @discardableResult
+    private func syncMissingLocalStateFromICloudIfNeeded() -> Bool {
+        copyFromICloudIfLocalMissing(relativePath: "app-state.json")
+    }
+
+    @discardableResult
+    private func syncMissingLocalAuthFromICloudIfNeeded(accountHomeFolderName: String) -> Bool {
+        copyFromICloudIfLocalMissing(relativePath: authRelativePath(for: accountHomeFolderName))
+    }
+
+    @discardableResult
+    private func syncMissingLocalAccountsFromICloudIfNeeded() -> Bool {
+        guard let iCloudRootURL else {
+            return false
+        }
+
+        let cloudAccountHomeFolderNames = accountHomeFolderNames(in: iCloudRootURL)
+        guard !cloudAccountHomeFolderNames.isEmpty else {
+            return false
+        }
+
+        var didCopyAny = false
+        for accountHomeFolderName in cloudAccountHomeFolderNames {
+            if syncMissingLocalAuthFromICloudIfNeeded(accountHomeFolderName: accountHomeFolderName) {
+                didCopyAny = true
+            }
+        }
+        return didCopyAny
+    }
+
+    @discardableResult
+    private func copyFromICloudIfLocalMissing(relativePath: String) -> Bool {
+        guard let iCloudRootURL else {
+            return false
+        }
+
+        let localURL = localRootURL.appendingPathComponent(relativePath)
+        guard !fileManager.fileExists(atPath: localURL.path) else {
+            return false
+        }
+
+        let cloudURL = iCloudRootURL.appendingPathComponent(relativePath)
+        guard fileManager.fileExists(atPath: cloudURL.path) else {
+            return false
+        }
+
+        do {
+            try fileManager.createDirectory(
+                at: localURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+            let data = try readRawData(at: cloudURL)
+            try writeFile(data: data, to: localURL)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func accountHomeFolderNames(in rootURL: URL) -> [String] {
+        let accountsDirectoryURL = rootURL.appendingPathComponent("accounts", isDirectory: true)
+        let accountDirectories = (try? fileManager.contentsOfDirectory(
+            at: accountsDirectoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        return accountDirectories.compactMap { accountDirectoryURL in
+            let authURL = accountDirectoryURL.appendingPathComponent("auth.json")
+            guard fileManager.fileExists(atPath: authURL.path) else {
+                return nil
+            }
+            return accountDirectoryURL.lastPathComponent
+        }
+    }
+
+    private func trackedSyncItems() -> [TrackedSyncItem] {
+        let localRelativePaths = persistentRelativePaths(in: localRootURL)
+        let cloudRelativePaths = persistentRelativePaths(in: iCloudRootURL)
+        let allRelativePaths = Array(localRelativePaths.union(cloudRelativePaths)).sorted()
+        return allRelativePaths.map(trackedSyncItem(for:))
+    }
+
+    private func persistentRelativePaths(in rootURL: URL?) -> Set<String> {
+        guard let rootURL else {
+            return []
+        }
+
+        var relativePaths: Set<String> = []
+        let stateURL = rootURL.appendingPathComponent("app-state.json")
+        if fileManager.fileExists(atPath: stateURL.path) {
+            relativePaths.insert("app-state.json")
+        }
+
+        for accountHomeFolderName in accountHomeFolderNames(in: rootURL) {
+            relativePaths.insert(authRelativePath(for: accountHomeFolderName))
+        }
+
+        return relativePaths
+    }
+
+    private func trackedSyncItem(for relativePath: String) -> TrackedSyncItem {
+        let localURL = localRootURL.appendingPathComponent(relativePath)
+        let cloudURL = iCloudRootURL?.appendingPathComponent(relativePath)
+        let localExists = fileManager.fileExists(atPath: localURL.path)
+        let cloudExists = cloudURL.map { fileManager.fileExists(atPath: $0.path) } ?? false
+
+        let localModificationDate = try? localURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let cloudModificationDate = cloudURL.flatMap {
+            try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        }
+
+        let localData = localExists ? (try? Data(contentsOf: localURL)) : nil
+        let cloudData = cloudExists ? cloudURL.flatMap { try? readRawData(at: $0) } : nil
+
+        let cloudResourceValues = cloudURL.flatMap {
+            try? $0.resourceValues(forKeys: [
+                .isUbiquitousItemKey,
+                .ubiquitousItemIsUploadedKey,
+                .ubiquitousItemIsUploadingKey,
+                .ubiquitousItemIsDownloadingKey,
+                .ubiquitousItemDownloadingStatusKey
+            ])
+        }
+        let isCloudCurrent: Bool = {
+            guard cloudExists else {
+                return true
+            }
+
+            guard cloudResourceValues?.isUbiquitousItem == true else {
+                return true
+            }
+
+            return cloudResourceValues?.ubiquitousItemIsUploaded == true
+                && cloudResourceValues?.ubiquitousItemIsUploading != true
+                && cloudResourceValues?.ubiquitousItemIsDownloading != true
+                && cloudResourceValues?.ubiquitousItemDownloadingStatus == URLUbiquitousItemDownloadingStatus.current
+        }()
+
+        return TrackedSyncItem(
+            relativePath: relativePath,
+            localExists: localExists,
+            cloudExists: cloudExists,
+            isMatched: localExists && cloudExists && localData == cloudData,
+            isCloudCurrent: isCloudCurrent,
+            localModificationDate: localModificationDate,
+            cloudModificationDate: cloudModificationDate
+        )
+    }
+
+    private func replacePersistentSnapshot(
+        sourceRootURL: URL,
+        destinationRootURL: URL
+    ) throws {
+        let sourceStateURL = sourceRootURL.appendingPathComponent("app-state.json")
+        let sourceAccountsDirectoryURL = sourceRootURL.appendingPathComponent("accounts", isDirectory: true)
+        let destinationStateURL = destinationRootURL.appendingPathComponent("app-state.json")
+        let destinationAccountsDirectoryURL = destinationRootURL.appendingPathComponent("accounts", isDirectory: true)
+
+        try fileManager.createDirectory(
+            at: destinationRootURL,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+
+        if fileManager.fileExists(atPath: destinationAccountsDirectoryURL.path) {
+            try fileManager.removeItem(at: destinationAccountsDirectoryURL)
+        }
+        try fileManager.createDirectory(
+            at: destinationAccountsDirectoryURL,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+
+        if fileManager.fileExists(atPath: sourceStateURL.path) {
+            let stateData = try readRawData(at: sourceStateURL)
+            try writeFile(data: stateData, to: destinationStateURL)
+        } else if fileManager.fileExists(atPath: destinationStateURL.path) {
+            try fileManager.removeItem(at: destinationStateURL)
+        }
+
+        let sourceAccountHomeFolderNames = accountHomeFolderNames(in: sourceRootURL)
+        for accountHomeFolderName in sourceAccountHomeFolderNames {
+            let sourceAuthURL = sourceAccountsDirectoryURL
+                .appendingPathComponent(accountHomeFolderName, isDirectory: true)
+                .appendingPathComponent("auth.json")
+            let destinationAccountDirectoryURL = destinationAccountsDirectoryURL
+                .appendingPathComponent(accountHomeFolderName, isDirectory: true)
+            let destinationAuthURL = destinationAccountDirectoryURL.appendingPathComponent("auth.json")
+
+            try fileManager.createDirectory(
+                at: destinationAccountDirectoryURL,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+            let data = try readRawData(at: sourceAuthURL)
+            try copyAuthFile(data: data, to: destinationAuthURL)
+        }
+    }
+
+    private func readRawData(at url: URL) throws -> Data {
+        ensureUbiquitousDownloadStarted(at: url)
+        return try Data(contentsOf: url)
+    }
+
+    private func markSyncCompleted() throws {
+        var localSettings = loadLocalSettings()
+        localSettings.lastConfirmedSyncAt = Date()
+        try saveLocalSettings(localSettings)
+    }
+
+    private func loadLocalSettings() -> LocalStoreSettings {
+        Self.loadLocalSettings(from: localSettingsURL)
+    }
+
+    private func saveLocalSettings(_ settings: LocalStoreSettings) throws {
+        let data = try JSONEncoder.codexMonitor.encode(settings)
+        try fileManager.createDirectory(
+            at: localRootURL,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        try writeFile(data: data, to: localSettingsURL)
+    }
+
+    private static func loadLocalSettings(from url: URL) -> LocalStoreSettings {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return LocalStoreSettings()
+        }
+
+        guard let data = try? Data(contentsOf: url) else {
+            return LocalStoreSettings()
+        }
+
+        return (try? JSONDecoder.codexMonitor.decode(LocalStoreSettings.self, from: data))
+            ?? LocalStoreSettings()
     }
 
     private func makeWorkspaces(
@@ -230,21 +661,6 @@ final class AuthSnapshotStore {
         return workspaces.first?.id ?? ""
     }
 
-    func currentAccountID() throws -> String? {
-        guard fileManager.fileExists(atPath: currentAuthURL().path) else {
-            return nil
-        }
-
-        let data = try Data(contentsOf: currentAuthURL())
-        let authFile = try JSONDecoder().decode(ChatGPTAuthFile.self, from: data)
-        if let accountID = authFile.tokens.accountID {
-            return accountID
-        }
-
-        let claims = try decodeClaims(from: authFile.tokens.idToken)
-        return claims.openAIAuth.chatgptAccountID
-    }
-
     private func mergeWorkspaceDisplayTitles(
         _ workspaces: [StoredWorkspace],
         existingWorkspaces: [StoredWorkspace]
@@ -279,10 +695,24 @@ final class AuthSnapshotStore {
         return try JSONDecoder().decode(JWTClaims.self, from: payloadData)
     }
 
-    private static func defaultRootURL() -> URL {
+    private func authRelativePath(for accountHomeFolderName: String) -> String {
+        "accounts/\(accountHomeFolderName)/auth.json"
+    }
+
+    private static func localRootURL() -> URL {
         let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         return baseURL.appendingPathComponent("MultiCodexLimitViewer", isDirectory: true)
+    }
+
+    private static func iCloudRootURL() -> URL? {
+        guard let ubiquityContainerURL = FileManager.default.url(forUbiquityContainerIdentifier: nil) else {
+            return nil
+        }
+
+        return ubiquityContainerURL
+            .appendingPathComponent("Documents", isDirectory: true)
+            .appendingPathComponent("MultiCodexLimitViewer", isDirectory: true)
     }
 }
 
@@ -290,6 +720,7 @@ extension AuthSnapshotStore {
     enum StoreError: LocalizedError {
         case authFileMissing(String)
         case invalidAuthFile(String)
+        case iCloudUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -297,9 +728,25 @@ extension AuthSnapshotStore {
                 return "Could not find auth.json at \(path)."
             case .invalidAuthFile(let message):
                 return message
+            case .iCloudUnavailable:
+                return "iCloud storage is unavailable on this Mac."
             }
         }
     }
+}
+
+private struct LocalStoreSettings: Codable {
+    var lastConfirmedSyncAt: Date?
+}
+
+private struct TrackedSyncItem {
+    let relativePath: String
+    let localExists: Bool
+    let cloudExists: Bool
+    let isMatched: Bool
+    let isCloudCurrent: Bool
+    let localModificationDate: Date?
+    let cloudModificationDate: Date?
 }
 
 private struct ChatGPTAuthFile: Decodable {
@@ -384,13 +831,13 @@ private extension JSONEncoder {
 }
 
 private extension Data {
-    init?(base64URLEncoded string: String) {
-        var normalized = string
+    init?(base64URLEncoded value: String) {
+        var normalized = value
             .replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
 
         let remainder = normalized.count % 4
-        if remainder > 0 {
+        if remainder != 0 {
             normalized += String(repeating: "=", count: 4 - remainder)
         }
 

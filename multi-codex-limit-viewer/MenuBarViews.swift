@@ -4,6 +4,7 @@
 //
 
 import AppKit
+import Combine
 import SwiftUI
 
 private let appTitle = "Codex Switcher"
@@ -714,6 +715,7 @@ struct StatusBarLabel: View {
 
 struct SettingsView: View {
     private let githubURL = URL(string: "https://github.com/znary/codex-switcher")!
+    private let syncStatusTimer = Timer.publish(every: 10, on: .main, in: .common).autoconnect()
     @ObservedObject var viewModel: MenuBarViewModel
 
     var body: some View {
@@ -815,6 +817,43 @@ struct SettingsView: View {
                         }
                     }
 
+                    SettingsPanelSection(title: viewModel.text(.iCloudSync)) {
+                        SettingsPanelRow {
+                            VStack(alignment: .leading, spacing: 14) {
+                                settingsInfoRow(title: viewModel.text(.iCloudSyncStatus), value: viewModel.cloudSyncStatusTitle)
+                                settingsInfoRow(title: viewModel.text(.iCloudSyncLastSync), value: viewModel.cloudSyncLastSyncText)
+                            }
+                        }
+
+                        SettingsPanelDivider()
+
+                        SettingsPanelRow {
+                            HStack(spacing: 12) {
+                                SettingsActionPill(
+                                    title: viewModel.text(.iCloudSyncOverwriteLocal),
+                                    isEnabled: viewModel.canOverwriteLocalFromICloud
+                                ) {
+                                    viewModel.overwriteLocalDataFromICloud()
+                                }
+
+                                SettingsActionPill(
+                                    title: viewModel.text(.iCloudSyncOverwriteICloud),
+                                    isEnabled: viewModel.canOverwriteICloudFromLocal
+                                ) {
+                                    viewModel.overwriteICloudDataFromLocal()
+                                }
+
+                                SettingsActionPill(
+                                    title: viewModel.text(.iCloudSyncDeleteStorage),
+                                    isEnabled: viewModel.canDeleteICloudStorage,
+                                    isDestructive: true
+                                ) {
+                                    viewModel.deleteICloudStorage()
+                                }
+                            }
+                        }
+                    }
+
                     SettingsPanelSection(title: viewModel.text(.language)) {
                         SettingsPanelRow {
                             VStack(alignment: .leading, spacing: 14) {
@@ -903,6 +942,7 @@ struct SettingsView: View {
                         SettingsPanelRow {
                             VStack(alignment: .leading, spacing: 14) {
                                 settingsInfoRow(title: viewModel.text(.version), value: appVersionLabel)
+                                settingsInfoRow(title: viewModel.text(.storedAt), value: viewModel.storagePath)
                                 settingsLinkRow(title: viewModel.text(.github), url: githubURL)
                             }
                         }
@@ -923,6 +963,12 @@ struct SettingsView: View {
             )
         }
         .background(WindowConfigurator(identifier: MenuBarViewModel.settingsWindowIdentifier))
+        .onAppear {
+            viewModel.refreshCloudSyncStatus()
+        }
+        .onReceive(syncStatusTimer) { _ in
+            viewModel.refreshCloudSyncStatus()
+        }
     }
 
     private var appDisplayName: String {
@@ -1013,25 +1059,50 @@ private struct SettingsPanelDivider: View {
 
 private struct SettingsActionPill: View {
     let title: String
+    var isEnabled = true
+    var isDestructive = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.codexInk)
+                .foregroundStyle(foregroundColor)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(
                     Capsule(style: .continuous)
-                        .fill(Color.codexCardRaised)
+                        .fill(backgroundColor)
                 )
                 .overlay(
                     Capsule(style: .continuous)
-                        .stroke(Color.codexStroke, lineWidth: 1)
+                        .stroke(borderColor, lineWidth: 1)
                 )
         }
         .buttonStyle(CapsuleHoverButtonStyle())
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.55)
+    }
+
+    private var foregroundColor: Color {
+        if isDestructive && isEnabled {
+            return Color(red: 0.76, green: 0.18, blue: 0.18)
+        }
+        return isEnabled ? Color.codexInk : Color.codexSecondary
+    }
+
+    private var backgroundColor: Color {
+        if isDestructive && isEnabled {
+            return Color(red: 1.0, green: 0.95, blue: 0.95)
+        }
+        return Color.codexCardRaised
+    }
+
+    private var borderColor: Color {
+        if isDestructive && isEnabled {
+            return Color(red: 0.92, green: 0.64, blue: 0.64)
+        }
+        return Color.codexStroke
     }
 }
 

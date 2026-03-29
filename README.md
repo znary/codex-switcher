@@ -45,8 +45,12 @@ Codex Switcher 是一个 macOS 菜单栏小工具，用来同时查看多个 Cha
 
 ### 数据与隐私
 
-- 所有账号快照和应用状态都只保存在本机。
-- 默认存储路径是 `~/Library/Application Support/MultiCodexLimitViewer`。
+- 应用始终先使用本机存储。
+- 如果构建时启用了 iCloud Documents，应用会额外保留一份 iCloud 副本，供你手动把本地覆盖到 iCloud，或者把 iCloud 覆盖到本地。
+- 只有当本机缺少对应文件时，应用才会从 iCloud 自动补齐，不会自动覆盖本机已有数据。
+- 可以在设置页删除 iCloud 副本，本机数据不受影响。
+- 临时登录目录和诊断日志仍然只保存在本机。
+- 本机默认存储路径是 `~/Library/Application Support/MultiCodexLimitViewer`。
 - 如果 `codex` 不在默认路径，可以通过环境变量 `CODEX_BINARY_PATH` 指定。
 
 ### 开源协议
@@ -96,8 +100,12 @@ Codex Switcher is a macOS menu bar app for monitoring multiple ChatGPT Codex acc
 
 ### Data and Privacy
 
-- All account snapshots and app state stay on your Mac.
-- The default storage path is `~/Library/Application Support/MultiCodexLimitViewer`.
+- The app always uses local storage first.
+- When the app is built with iCloud Documents enabled, it also keeps a separate iCloud copy so you can manually overwrite iCloud with local data, or overwrite local data with iCloud.
+- The app only fills files from iCloud when the matching local file is missing. It never overwrites existing local data automatically.
+- You can delete the iCloud copy from Settings without affecting local data.
+- Temporary login folders and diagnostics logs remain local-only.
+- The default local storage path is `~/Library/Application Support/MultiCodexLimitViewer`.
 - If `codex` is not in a standard location, set `CODEX_BINARY_PATH`.
 
 ### License

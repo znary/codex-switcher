@@ -181,6 +181,14 @@ enum AppTextKey: String, Codable, CaseIterable, Sendable {
     case english
     case simplifiedChinese
     case chooseAppLanguage
+    case iCloudSync
+    case iCloudSyncStatus
+    case iCloudSyncLastSync
+    case iCloudSyncTrackedFiles
+    case iCloudSyncCloudStorage
+    case iCloudSyncOverwriteLocal
+    case iCloudSyncOverwriteICloud
+    case iCloudSyncDeleteStorage
     case codexCLI
     case diagnostics
     case about
@@ -259,6 +267,14 @@ private enum AppTextCatalog {
         .english: "English",
         .simplifiedChinese: "Simplified Chinese",
         .chooseAppLanguage: "Choose the app language.",
+        .iCloudSync: "iCloud Sync",
+        .iCloudSyncStatus: "Status",
+        .iCloudSyncLastSync: "Last Sync Action",
+        .iCloudSyncTrackedFiles: "Matched Items",
+        .iCloudSyncCloudStorage: "iCloud Storage",
+        .iCloudSyncOverwriteLocal: "iCloud Overwrite Local",
+        .iCloudSyncOverwriteICloud: "Local Overwrite iCloud",
+        .iCloudSyncDeleteStorage: "Delete iCloud Data",
         .codexCLI: "Codex CLI",
         .diagnostics: "Diagnostics",
         .about: "About",
@@ -336,6 +352,14 @@ private enum AppTextCatalog {
         .english: "英语",
         .simplifiedChinese: "简体中文",
         .chooseAppLanguage: "选择应用语言。",
+        .iCloudSync: "iCloud 同步",
+        .iCloudSyncStatus: "当前状态",
+        .iCloudSyncLastSync: "最近同步时间",
+        .iCloudSyncTrackedFiles: "一致项目",
+        .iCloudSyncCloudStorage: "iCloud 存储",
+        .iCloudSyncOverwriteLocal: "用 iCloud 覆盖本地",
+        .iCloudSyncOverwriteICloud: "用本地覆盖 iCloud",
+        .iCloudSyncDeleteStorage: "删除 iCloud 数据",
         .codexCLI: "Codex CLI",
         .diagnostics: "诊断",
         .about: "关于",
