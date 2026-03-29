@@ -18,6 +18,7 @@ DMG_PATH="$BUILD_ROOT/${DISPLAY_NAME// /-}.dmg"
 EXPORT_OPTIONS_PLIST="$BUILD_ROOT/ExportOptions.plist"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 DMG_SIGN_IDENTITY="${DMG_SIGN_IDENTITY:-}"
+ALLOW_PROVISIONING_UPDATES="${ALLOW_PROVISIONING_UPDATES:-1}"
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -49,6 +50,11 @@ require_command codesign
 require_command security
 require_command spctl
 
+XCODE_PROVISIONING_FLAGS=()
+if [[ "$ALLOW_PROVISIONING_UPDATES" == "1" ]]; then
+  XCODE_PROVISIONING_FLAGS+=(-allowProvisioningUpdates)
+fi
+
 rm -rf "$BUILD_ROOT"
 mkdir -p "$BUILD_ROOT"
 
@@ -75,13 +81,15 @@ xcodebuild archive \
   -scheme "$SCHEME" \
   -configuration "$CONFIGURATION" \
   -derivedDataPath "$DERIVED_DATA_PATH" \
-  -archivePath "$ARCHIVE_PATH"
+  -archivePath "$ARCHIVE_PATH" \
+  "${XCODE_PROVISIONING_FLAGS[@]}"
 
 echo "==> Exporting Developer ID app"
 xcodebuild -exportArchive \
   -archivePath "$ARCHIVE_PATH" \
   -exportPath "$EXPORT_PATH" \
-  -exportOptionsPlist "$EXPORT_OPTIONS_PLIST"
+  -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
+  "${XCODE_PROVISIONING_FLAGS[@]}"
 
 APP_PATH="$EXPORT_PATH/$APP_NAME.app"
 if [[ ! -d "$APP_PATH" ]]; then

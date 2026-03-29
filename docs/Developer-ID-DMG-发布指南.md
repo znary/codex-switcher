@@ -82,6 +82,22 @@ cd /Users/liuzhuangm4/develop/codexlimitviewer/multi-codex-limit-viewer
 NOTARY_PROFILE=codex-notary ./scripts/package_direct_dmg.sh
 ```
 
+如果这次构建启用了 iCloud Documents，`Developer ID` 导出会额外需要匹配的 provisioning profile。
+脚本现在会默认带上 `-allowProvisioningUpdates`，让 Xcode 自动去拉取或更新这个 profile。
+前提是：
+
+- 当前 Mac 上的 Xcode 已经登录你的开发者账号
+- `com.zzz.codex.switcher` 这个 App ID 已经在 Apple Developer 后台开了 iCloud
+- 这台机器有权限访问对应 team
+
+如果你就是想完全离线打包，可以手动关掉：
+
+```bash
+ALLOW_PROVISIONING_UPDATES=0 ./scripts/package_direct_dmg.sh
+```
+
+但这样一来，只要本机没有现成的 Developer ID provisioning profile，`exportArchive` 还是会失败。
+
 脚本会按下面顺序执行：
 
 1. `xcodebuild archive`
